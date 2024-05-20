@@ -1,0 +1,17 @@
+# start by ignoring everything
+*
+
+# now whitelist all subdirectories...
+!*/
+
+# but ignore the python cache folder
+/__pycache__/
+
+# don't ignore python files
+!*.py
+
+# don't ignore the contents of data folder
+!/data/*
+
+# finally, don't ignore this file
+!.gitignore
