@@ -15,13 +15,13 @@ class lyapunov:
 
         self._impl_reset_roa(domain, roa_init)
 
-    def sample(self, dynamics: fun.function, control: fun.deterministic = None) -> np.ndarray:
+    def sample(self, dynamics: fun.function, control: fun.deterministic = None, samples_n: int = 1) -> np.ndarray:
         # prepare states and actions
         states = self._impl_domain.states
         actions = control(states) if control is not None else None
 
         if dynamics.has_uncertainty():
-            samples = dynamics.sample(states, size=5)
+            samples = dynamics.sample(states, size=samples_n)
         else:
             samples = dynamics(states, actions)
 

@@ -10,6 +10,9 @@
 # don't ignore python files
 !*.py
 
+# don't ignore jupyter notebook files
+!*.ipynb
+
 # don't ignore the contents of data folder
 !/data/*
 
