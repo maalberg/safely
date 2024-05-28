@@ -12,4 +12,4 @@ The current work is inspired by the following publications:
 
 To showcase the current state of learning this topic, here is a list of examples:
 
-[Online learning of a simple one-dimensional system model](safely_1d.ipynb)
+[Online learning of a simple one-dimensional dynamical model](safely_1d.ipynb)
