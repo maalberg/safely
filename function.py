@@ -43,9 +43,9 @@ class function(metaclass=interface):
 
 
 # ---------------------------------------------------------------------------*/
-# - uncertainty
+# - uncertain function
 
-class uncertainty(metaclass=interface):
+class uncertain(metaclass=interface):
     @abstractmethod
     def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -66,6 +66,18 @@ class uncertainty(metaclass=interface):
     def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Datapoints observed by this function, see method ``observe_datapoints``.
+        """
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------*/
+# differentiable function
+
+class differentiable(metaclass=interface):
+    @abstractmethod
+    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+        """
+        Differentiate this function on given ``domain`` and return resulting values.
         """
         raise NotImplementedError
 
@@ -127,34 +139,24 @@ class deterministic(function):
 # ---------------------------------------------------------------------------*/
 # quadratic function
 
-class quadratic(deterministic):
-    def __init__(self, cost: np.ndarray) -> None:
-        self._impl_parameters = np.atleast_2d(cost)
+class quadratic(function, differentiable):
+    def __init__(self, parameters: np.ndarray) -> None:
+        self._params = np.atleast_2d(parameters)
 
-    def evaluate(self, domain: np.ndarray):
-        return np.sum(domain.dot(self._impl_parameters) * domain, axis=1)
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray]:
+        sample = np.sum(domain.dot(self._params) * domain, axis=1)
+        return [sample for this in range(samples_n)]
 
-    def differentiate(self, domain):
-        return 2 * domain.dot(self._impl_parameters)
-
-    def parameters_derivative(self, domain: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-
-    @property
-    def parameters(self) -> np.ndarray:
-        return self._impl_parameters
-
-    @parameters.setter
-    def parameters(self, value) -> None:
-        self._impl_parameters = value
+    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+        return 2 * domain.dot(self._params)
 
     @property
     def dims_i_n(self) -> int:
-        return np.shape(self._impl_parameters)[1]
+        return np.shape(self._params)[1]
 
     @property
     def dims_o_n(self) -> int:
-        return np.shape(self._impl_parameters)[0]
+        return np.shape(self._params)[0]
 
 
 # ---------------------------------------------------------------------------*/
@@ -205,7 +207,7 @@ class linearity(deterministic):
 # ---------------------------------------------------------------------------*/
 # - dynamics
 
-class dynamics(function, uncertainty):
+class dynamics(function, uncertain):
     def __init__(
             self,
             model: function, policy: function = None, error: gpy.kern.Kern = None) -> None:
