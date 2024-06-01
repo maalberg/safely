@@ -25,6 +25,27 @@ class function(metaclass=interface):
         """
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def dims_i_n(self) -> int:
+        """
+        Number of input dimensions.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def dims_o_n(self) -> int:
+        """
+        Number of output dimensions.
+        """
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------*/
+# - uncertainty
+
+class uncertainty(metaclass=interface):
     @abstractmethod
     def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -42,23 +63,7 @@ class function(metaclass=interface):
 
     @property
     @abstractmethod
-    def dims_n_i(self) -> int:
-        """
-        Number of input dimensions.
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def dims_n_o(self) -> int:
-        """
-        Number of output dimensions.
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
+    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Datapoints observed by this function, see method ``observe_datapoints``.
         """
@@ -75,12 +80,6 @@ class deterministic(function):
         Evaluate deterministic function on ``domain`` and return function values
         """
         return self.evaluate(domain)
-
-    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        pass
-
-    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
-        pass
 
     @abstractmethod
     def evaluate(self, domain: np.ndarray) -> np.ndarray:
@@ -124,78 +123,6 @@ class deterministic(function):
         """
         raise NotImplementedError
 
-    @property
-    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
-        pass
-
-
-# ---------------------------------------------------------------------------*/
-# uncertain function
-
-class uncertain(function):
-    @util.stack_args(first=1)
-    def __call__(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Predict this uncertain function on given ``domain`` and return the predicted values
-        together with corresponding variance
-        """
-        return self.predict(domain)
-
-    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        pass
-
-    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
-        pass
-
-    @abstractmethod
-    def sample(self, domain: np.ndarray, size: int = 1) -> np.ndarray:
-        """
-        Sample this uncertain function with ``domain`` array as input and return
-        resulting samples. This method draws ``size`` samples from a normal
-        distribution. This method suits when there is a need to plot
-        the underlying function.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def predict(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Predict the uncertainty of this function on given ``domain`` and
-        return the resulting mean and variance
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def decrease_uncertainty(self, domain: np.ndarray, value: np.ndarray) -> None:
-        """
-        Decrease the uncertainty of this uncertain function by letting the function observe
-        the given ``value`` on certain ``domain``
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def dim_o_active(self) -> int:
-        """
-        Property that holds the active output dimension of this uncertain function as an integer value
-
-        Note that this makes the uncertain function scalar.
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def data_observed(self) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Property that holds (X, Y) data that has been observed by this uncertain function in order to decrease uncertainty,
-        see `decrease_uncertainty`
-        """
-        raise NotImplementedError
-
-    @property
-    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
-        pass
-
 
 # ---------------------------------------------------------------------------*/
 # quadratic function
@@ -222,82 +149,12 @@ class quadratic(deterministic):
         self._impl_parameters = value
 
     @property
-    def dims_n_i(self) -> int:
+    def dims_i_n(self) -> int:
         return np.shape(self._impl_parameters)[1]
 
     @property
-    def dims_n_o(self) -> int:
+    def dims_o_n(self) -> int:
         return np.shape(self._impl_parameters)[0]
-
-
-# ---------------------------------------------------------------------------*/
-# uncertainty modeling in terms of a Gaussian process
-
-class uncertainty(uncertain):
-    def __init__(
-            self,
-            apriori: deterministic, apriori_domain: dom.gridworld,
-            uncertainty: gpy.kern.Kern, uncertainty_var: float,
-            dim_o_active: int = 0) -> None:
-
-        self._impl_dims_n_i = apriori.dims_n_i
-        self._impl_dims_n_o = apriori.dims_n_o
-
-        self._impl_dim_o_active = dim_o_active
-
-        # use apriori dynamics as the mean function of a Gaussian process
-        gp_mean = gpy.core.Mapping(apriori.dims_n_i, apriori.dims_n_o)
-        gp_mean.f = apriori
-        gp_mean.update_gradients = lambda a, b: None
-
-        # a gaussian process with initial observed data at the origin with X=0, Y=0
-        self._impl_gp = gpy.core.GP(
-            np.zeros((1, apriori.dims_n_i)), np.zeros((1, apriori.dims_n_o)),
-            uncertainty,
-            gpy.likelihoods.Gaussian(variance=uncertainty_var),
-            mean_function=gp_mean)
-
-        self._impl_uncertainty_var = uncertainty_var
-
-        # based on the domain of apriori dynamics, construct a less discretized domain for fast sampling
-        self._impl_sampling_X = dom.gridworld(apriori_domain.dims_lim, 100).states
-        self._impl_sampling_alpha = None
-
-    def sample(self, domain: np.ndarray, size: int = 1) -> np.ndarray:
-
-        # # add mean function values to the sample
-        # if self._impl_gp.mean_function is not None:
-        #     value += self._impl_gp.mean_function.f(domain)
-
-        samples = self._impl_gp.posterior_samples(domain, size=size)
-    
-        # format samples as a tuple of samples
-        return [samples[..., this_sample] for this_sample in range(samples.shape[-1])]
-
-    def predict(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return self._impl_gp.predict_noiseless(domain)
-
-    def decrease_uncertainty(self, state: np.ndarray, value: np.ndarray) -> None:
-        # update the observed data of the internal Gaussian process
-        self._impl_gp.set_XY(
-            np.row_stack([self._impl_gp.X, state]),
-            np.row_stack([self._impl_gp.Y, value]))
-
-    @property
-    def dims_n_i(self) -> int:
-        return self._impl_dims_n_i
-
-    @property
-    def dims_n_o(self) -> int:
-        return self._impl_dims_n_o
-
-    @property
-    def dim_o_active(self) -> int:
-        return self._impl_dim_o_active
-    
-    @property
-    def data_observed(self) -> tuple[np.ndarray, np.ndarray]:
-        return (self._impl_gp.X, self._impl_gp.Y)
 
 
 # ---------------------------------------------------------------------------*/
@@ -337,37 +194,38 @@ class linearity(deterministic):
         raise NotImplementedError
 
     @property
-    def dims_n_i(self) -> int:
+    def dims_i_n(self) -> int:
         return np.shape(self._impl_dynamics)[1]
 
     @property
-    def dims_n_o(self) -> int:
+    def dims_o_n(self) -> int:
         return np.shape(self._impl_dynamics)[0]
 
 
 # ---------------------------------------------------------------------------*/
 # - dynamics
 
-class dynamics(function):
+class dynamics(function, uncertainty):
     def __init__(
             self,
-            model: function, error: gpy.kern.Kern = None,
-            policy: function = None) -> None:
+            model: function, policy: function = None, error: gpy.kern.Kern = None) -> None:
 
-        self._dims_n_i = model.dims_n_i
-        self._dims_n_o = model.dims_n_o
+        self._dims_i_n = model.dims_i_n
+        self._dims_o_n = model.dims_o_n
+
+        self.policy = policy
 
         # if error is present, construct stochastic dynamics,
         # otherwise the dynamics are deterministic
         if error is not None:
             # use model as the mean function of a Gaussian process
-            gp_mean = gpy.core.Mapping(model.dims_n_i, model.dims_n_o)
+            gp_mean = gpy.core.Mapping(model.dims_i_n, model.dims_o_n)
             gp_mean.f = model
             gp_mean.update_gradients = lambda a, b: None
 
             # a gaussian process with initial observed data at the origin with x=0, y=0
             gp = gpy.core.GP(
-                np.zeros((1, model.dims_n_i)), np.zeros((1, model.dims_n_o)),
+                np.zeros((1, model.dims_i_n)), np.zeros((1, model.dims_o_n)),
                 error,
                 gpy.likelihoods.Gaussian(variance=0), # no observaion noise at the moment
                 mean_function=gp_mean)
@@ -430,8 +288,6 @@ class dynamics(function):
 
             self._observations = observed
 
-        self.policy = policy
-
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> np.ndarray:
 
         # augment domain with actuation signal if policy is available
@@ -453,12 +309,12 @@ class dynamics(function):
         self._observer(domain, value)
 
     @property
-    def dims_n_i(self) -> int:
-        return self._dims_n_i
+    def dims_i_n(self) -> int:
+        return self._dims_i_n
 
     @property
-    def dims_n_o(self) -> int:
-        return self._dims_n_o
+    def dims_o_n(self) -> int:
+        return self._dims_o_n
 
     @property
     def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
@@ -523,11 +379,11 @@ class pendulum_inv(deterministic):
         raise NotImplementedError
 
     @property
-    def dims_n_i(self) -> int:
+    def dims_i_n(self) -> int:
         return 3
 
     @property
-    def dims_n_o(self) -> int:
+    def dims_o_n(self) -> int:
         return 2
 
     @property
@@ -644,11 +500,11 @@ class dlqr(deterministic):
         self._impl_parameters = value
 
     @property
-    def dims_n_i(self) -> int:
+    def dims_i_n(self) -> int:
         return np.shape(self._impl_control)[1]
 
     @property
-    def dims_n_o(self) -> int:
+    def dims_o_n(self) -> int:
         return np.shape(self._impl_control)[0]
 
 
@@ -679,9 +535,9 @@ class saturated(deterministic):
         return self._impl_func.parameters_derivative(states)
 
     @property
-    def dims_n_i(self) -> int:
-        return self._impl_func.dims_n_i
+    def dims_i_n(self) -> int:
+        return self._impl_func.dims_i_n
 
     @property
-    def dims_n_o(self) -> int:
-        return self._impl_func.dims_n_o
+    def dims_o_n(self) -> int:
+        return self._impl_func.dims_o_n

@@ -32,7 +32,7 @@ class lyapunov:
 
     def measure_safety(
             self,
-            dynamics: fun.function,
+            dynamics: fun.uncertainty,
             ci: float = 1.96) -> tuple[np.ndarray, np.ndarray]:
         """
         This method calculates the boundaries of the derivative of a Lyapunov function candidate
@@ -63,7 +63,7 @@ class lyapunov:
 
     def update_roa(
             self,
-            dynamics: fun.function,
+            dynamics: fun.dynamics,
             safety_thr: float | list[float] = 0, needs_reset: bool = False) -> None:
         """
         Update the current region of attraction (ROA) based on ``dynamics`` and a ``safety_thr``.
@@ -139,14 +139,14 @@ class lyapunov:
 
         return search_interval
 
-    def find_uncertainty(self, dynamics: fun.dynamics) -> np.ndarray:
+    def find_uncertainty(self, uncertainty: fun.uncertainty) -> np.ndarray:
         """
         Find a state with maximum uncertainty which is still safe to sample given the ``dynamics``
         """
 
         # determine a location (index) in a safe set, where the given uncertain function
         # exhibits maximum uncertainty
-        _, error = dynamics.evaluate_error(self._impl_domain.states)
+        _, error = uncertainty.evaluate_error(self._impl_domain.states)
         this_error_max = np.argmax(error[self._impl_roa, 0]) # fix me <- active dimension
 
         # based on location, extract the corresponding state
