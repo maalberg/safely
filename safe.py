@@ -15,22 +15,24 @@ class lyapunov:
 
         self._impl_reset_roa(domain, roa_init)
 
-    def sample(self, dynamics: fun.function, control: fun.deterministic = None, samples_n: int = 1) -> np.ndarray:
-        # prepare states and actions
-        states = self._impl_domain.states
-        actions = control(states) if control is not None else None
+    def differentiate_along(self, tragectory: np.ndarray, squared: bool = False) -> np.ndarray:
+        """
+        Calculate the derivative of this Lyapunov function along dynamical system ``tragectory``
+        and return the resulting derivative. The ``tragectory`` can also represent
+        variance of an uncertain system. In this case, ``squared`` must be set to True.
+        """
+        lyap_derivative = self.candidate.differentiate(self._impl_domain.states)
+        if squared: lyap_derivative = lyap_derivative**2
+        return np.sum(lyap_derivative * tragectory, axis=1)
 
-        if dynamics.has_uncertainty():
-            samples = dynamics.sample(states, size=samples_n)
-        else:
-            samples = dynamics(states, actions)
+    def sample(self, dynamics: fun.function, samples_n: int = 1) -> np.ndarray:
+        samples = dynamics(self._impl_domain.states, samples_n=samples_n)
 
-        lyap_d = self.candidate.differentiate(states)
-        return [np.sum(lyap_d * sample, axis=1) for sample in samples]
+        return [self.differentiate_along(sample) for sample in samples]
 
     def measure_safety(
             self,
-            dynamics: fun.function, control: fun.deterministic = None,
+            dynamics: fun.function,
             ci: float = 1.96) -> tuple[np.ndarray, np.ndarray]:
         """
         This method calculates the boundaries of the derivative of a Lyapunov function candidate
@@ -45,18 +47,10 @@ class lyapunov:
 
         # prepare states and actions
         states = self._impl_domain.states
-        actions = control(states) if control is not None else None
+        #actions = control(states) if control is not None else None
 
         # evaluate dynamics
-        values = dynamics(states, actions)
-
-        # extract mean and variance from returned values
-        if dynamics.has_uncertainty():
-            mean = values[0]
-            var = values[1]
-        else:
-            mean = values
-            var = np.zeros_like(mean)
+        mean, var = dynamics.evaluate_error(states)
 
         # calculate Lyapunov derivative along the mean and variance of dynamics
         lyap_d = self.candidate.differentiate(states)
@@ -69,11 +63,11 @@ class lyapunov:
 
     def update_roa(
             self,
-            dynamics: fun.function, policy: fun.deterministic = None,
+            dynamics: fun.function,
             safety_thr: float | list[float] = 0, needs_reset: bool = False) -> None:
         """
-        Update the current region of attraction (ROA) based on `dynamics` and a `safety_thr`.
-        There is a possibility to reset the ROA with a `needs_reset` flag.
+        Update the current region of attraction (ROA) based on ``dynamics`` and a ``safety_thr``.
+        There is a possibility to reset the ROA with a ``needs_reset`` flag.
         """
 
         if needs_reset is True:
@@ -83,7 +77,7 @@ class lyapunov:
         # based on a Lyapunov derivative, find a safe set inside the domain
 
         # measure safety boundry
-        safety_mean, safety_ci = self.measure_safety(dynamics, policy)
+        safety_mean, safety_ci = self.measure_safety(dynamics)
         safety_bdry = safety_mean + safety_ci
 
         # a safe set is where the Lyapunov derivative is less than a threshold or
@@ -145,33 +139,29 @@ class lyapunov:
 
         return search_interval
 
-    def find_uncertainty(self, dynamics: fun.uncertain, policy: fun.deterministic = None) -> np.ndarray:
+    def find_uncertainty(self, dynamics: fun.dynamics) -> np.ndarray:
         """
         Find a state with maximum uncertainty which is still safe to sample given the ``dynamics``
         """
 
         # determine a location (index) in a safe set, where the given uncertain function
         # exhibits maximum uncertainty
-        states = self._impl_domain.states
-        if policy is not None:
-            _, dyn_var = dynamics(states, policy(states))
-        else:
-            _, dyn_var = dynamics(states)
-        max_uncertainty_id = np.argmax(dyn_var[self._impl_roa, dynamics.dim_o_active])
+        _, error = dynamics.evaluate_error(self._impl_domain.states)
+        this_error_max = np.argmax(error[self._impl_roa, 0]) # fix me <- active dimension
 
         # based on location, extract the corresponding state
         state_uncertain = self._impl_domain.states[ # in all domain
             self._impl_roa][                # narrow down to a safe set
-                [max_uncertainty_id], :].copy()     # and extract a row vector denoting a (multidimensional) state
+                [this_error_max], :].copy()     # and extract a row vector denoting a (multidimensional) state
 
         return state_uncertain
 
-    def decrease_uncertainty(self, dynamics: fun.uncertain) -> None:
+    def decrease_uncertainty(self, dynamics: fun.dynamics) -> None:
         """
-        Decrease uncertainty of `dynamics` by letting it sample a safe state which has maximum uncertainty
+        Decrease uncertainty of ``dynamics`` by letting it sample a safe state which has maximum uncertainty
         """
         state_uncertain = self.find_uncertainty(dynamics)
-        dynamics.decrease_uncertainty(state_uncertain, dynamics.sample(state_uncertain)[0])
+        dynamics.observe_datapoints(state_uncertain, dynamics(state_uncertain)[0])
 
     @property
     def roa_boundary(self) -> float:

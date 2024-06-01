@@ -14,27 +14,37 @@ import utilities as util
 
 
 # ---------------------------------------------------------------------------*/
-# function
+# - function
 
 class function(metaclass=interface):
     @abstractmethod
-    @util.stack_args(first=1)
-    def __call__(self, domain: np.ndarray) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray]:
         """
-        Call this function on ``domain`` and return resulting function values,
-        potentially returning uncertainty as well
+        Take ``samples_n`` number of function samples with ``domain`` as input and
+        return these samples in a tuple.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def has_uncertainty(self) -> bool:
+    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Evaluate function error in given ``domain`` and return a predicted mean value
+        together with a corresponding variance.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+        """
+        Let function observe datapoints in ``domain`` with given ``value``.
+        """
         raise NotImplementedError
 
     @property
     @abstractmethod
     def dims_n_i(self) -> int:
         """
-        Property that holds the number of input dimensions as an integer value
+        Number of input dimensions.
         """
         raise NotImplementedError
 
@@ -42,7 +52,15 @@ class function(metaclass=interface):
     @abstractmethod
     def dims_n_o(self) -> int:
         """
-        Property that holds the number of output dimensions as an integer value
+        Number of output dimensions.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        Datapoints observed by this function, see method ``observe_datapoints``.
         """
         raise NotImplementedError
 
@@ -58,8 +76,11 @@ class deterministic(function):
         """
         return self.evaluate(domain)
 
-    def has_uncertainty(self) -> bool:
-        return False
+    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        pass
+
+    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+        pass
 
     @abstractmethod
     def evaluate(self, domain: np.ndarray) -> np.ndarray:
@@ -103,6 +124,10 @@ class deterministic(function):
         """
         raise NotImplementedError
 
+    @property
+    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
+        pass
+
 
 # ---------------------------------------------------------------------------*/
 # uncertain function
@@ -116,8 +141,11 @@ class uncertain(function):
         """
         return self.predict(domain)
 
-    def has_uncertainty(self) -> bool:
-        return True
+    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        pass
+
+    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+        pass
 
     @abstractmethod
     def sample(self, domain: np.ndarray, size: int = 1) -> np.ndarray:
@@ -163,6 +191,10 @@ class uncertain(function):
         see `decrease_uncertainty`
         """
         raise NotImplementedError
+
+    @property
+    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray] | None:
+        pass
 
 
 # ---------------------------------------------------------------------------*/
@@ -311,3 +343,345 @@ class linearity(deterministic):
     @property
     def dims_n_o(self) -> int:
         return np.shape(self._impl_dynamics)[0]
+
+
+# ---------------------------------------------------------------------------*/
+# - dynamics
+
+class dynamics(function):
+    def __init__(
+            self,
+            model: function, error: gpy.kern.Kern = None,
+            policy: function = None) -> None:
+
+        self._dims_n_i = model.dims_n_i
+        self._dims_n_o = model.dims_n_o
+
+        # if error is present, construct stochastic dynamics,
+        # otherwise the dynamics are deterministic
+        if error is not None:
+            # use model as the mean function of a Gaussian process
+            gp_mean = gpy.core.Mapping(model.dims_n_i, model.dims_n_o)
+            gp_mean.f = model
+            gp_mean.update_gradients = lambda a, b: None
+
+            # a gaussian process with initial observed data at the origin with x=0, y=0
+            gp = gpy.core.GP(
+                np.zeros((1, model.dims_n_i)), np.zeros((1, model.dims_n_o)),
+                error,
+                gpy.likelihoods.Gaussian(variance=0), # no observaion noise at the moment
+                mean_function=gp_mean)
+
+            # define a sampling method for stochastic dynamics
+            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray]:
+                samples = gp.posterior_samples(domain, size=samples_n)
+
+                # format samples as a tuple of samples
+                return [samples[..., this_sample] for this_sample in range(samples.shape[-1])]
+
+            self._sampling = sample
+
+            # define a method to evaluate the error of stochastic dynamics
+            def error_eval(domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                return gp.predict(domain)
+
+            self._error = error_eval
+
+            # define a method to observe datapoints in order to reduce the uncertainty of stochastic dynamics
+            def observe(domain: np.ndarray, value: np.ndarray) -> None:
+                gp.set_XY(
+                    np.row_stack([gp.X, domain]),
+                    np.row_stack([gp.Y, value]))
+
+            self._observer = observe
+
+            # define a method to return observed datapoints for stochastic dynamics
+            def observed() -> tuple[np.ndarray, np.ndarray]:
+                return gp.X, gp.Y
+
+            self._observations = observed
+        else:
+            # define a sampling method for deterministic dynamics
+            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray]:
+                sample = model(domain)
+
+                return [sample for this in range(samples_n)]
+
+            self._sampling = sample
+
+            # define a method to evaluate the error of deterministic dynamics (there is no error)
+            def error_eval(domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                mean = model(domain)
+                var = np.zeros_like(mean)
+
+                return mean, var
+
+            self._error = error_eval
+
+            # define a method to observe datapoints for deterministic dynamics (this has no meaning)
+            def observe(domain: np.ndarray, value: np.ndarray) -> None:
+                pass
+
+            self._observer = observe
+
+            # define a method to return observed datapoints in case of deterministic dynamics (there will be none)
+            def observed() -> tuple[np.ndarray, np.ndarray]:
+                return None
+
+            self._observations = observed
+
+        self.policy = policy
+
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> np.ndarray:
+
+        # augment domain with actuation signal if policy is available
+        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+
+        # sample function
+        return self._sampling(domain, samples_n)
+
+    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+
+        # augment domain with actuation signal if policy is available
+        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+
+        # evaluate function error
+        return self._error(domain)
+
+    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+        # observe given datapoints
+        self._observer(domain, value)
+
+    @property
+    def dims_n_i(self) -> int:
+        return self._dims_n_i
+
+    @property
+    def dims_n_o(self) -> int:
+        return self._dims_n_o
+
+    @property
+    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
+        # return observed datapoints, if any
+        return self._observations()
+
+
+# ---------------------------------------------------------------------------*/
+# - inverted pendulum
+
+class pendulum_inv(deterministic):
+    def __init__(
+            self,
+            mass: float, length: float, friction: float,
+            state_action_max: tuple[list, list] = None) -> None:
+        self.mass = mass
+        self.length = length
+        self.friction = friction
+        self.state_action_max = state_action_max
+
+    @util.stack_args(first=1)
+    def __call__(self, domain: np.ndarray) -> np.ndarray:
+        return self.differentiate(domain)
+
+    def evaluate(self, domain: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+        """
+        Take time-derivative of pendulum dynamics by solving an ordinary differential equation,
+        where ``domain`` contains arrays of states and corresponding actions.
+        Every row of input arrays represents data to evaluate,
+        whereas columns represent dimensions.
+        """
+        state, action = np.split(domain, indices_or_sections=[2], axis=1)
+        state, action = self.denormalize(state, action)
+
+        gravity = self.gravity
+        length = self.length
+        friction = self.friction
+        inertia = self.inertia
+
+        # physical dynamics
+        angle, angular_velocity = np.split(state, indices_or_sections=2, axis=1)
+        angular_acceleration = gravity / length * np.sin(angle) + action / inertia
+        if friction > 0:
+            angular_acceleration -= friction / inertia * angular_velocity
+
+        state_derivative = np.column_stack((angular_velocity, angular_acceleration))
+        state_derivative = self.normalize_state(state_derivative)
+        return state_derivative
+
+    @property
+    def parameters(self) -> np.ndarray:
+        raise NotImplementedError
+
+    @parameters.setter
+    def parameters(self, value) -> None:
+        raise NotImplementedError
+
+    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    @property
+    def dims_n_i(self) -> int:
+        return 3
+
+    @property
+    def dims_n_o(self) -> int:
+        return 2
+
+    @property
+    def inertia(self):
+        return self.mass * self.length ** 2
+
+    @property
+    def gravity(self):
+        return 9.81
+
+    def _impl_get_state_denorm(self) -> np.ndarray:
+        return np.diag(np.atleast_1d(self.state_action_max[0]))
+
+    def _impl_get_state_norm(self) -> np.ndarray:
+        return np.diag(np.diag(self._impl_get_state_denorm()) ** -1)
+
+    def _impl_get_action_denorm(self) -> np.ndarray:
+        return np.diag(np.atleast_1d(self.state_action_max[1]))
+
+    def _impl_get_action_norm(self) -> np.ndarray:
+        return np.diag(np.diag(self._impl_get_action_denorm()) ** -1)
+
+    def normalize_state(self, state: np.ndarray) -> np.ndarray:
+        if self.state_action_max is None:
+            return state
+
+        return state.dot(self._impl_get_state_norm())
+
+    def normalize_action(self, action: np.ndarray) -> np.ndarray:
+        if self.state_action_max is None:
+            return action
+
+        return action.dot(self._impl_get_action_norm())
+
+    def normalize(self, state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return self.normalize_state(state), self.normalize_action(action)
+
+    def denormalize_state(self, state: np.ndarray) -> np.ndarray:
+        if self.state_action_max is None:
+            return state
+
+        return state.dot(self._impl_get_state_denorm())
+
+    def denormalize_action(self, action: np.ndarray) -> np.ndarray:
+        if self.state_action_max is None:
+            return action
+
+        return action.dot(self._impl_get_action_denorm())
+
+    def denormalize(self, state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return self.denormalize_state(state), self.denormalize_action(action)
+
+    def linearize(self) -> tuple[np.ndarray, np.ndarray]:
+        gravity = self.gravity
+        length = self.length
+        friction = self.friction
+        inertia = self.inertia
+
+        # linearized dynamics, where sinx = x
+        a = np.array([
+            [0, 1],
+            [gravity / length, -friction / inertia]])
+
+        # action input
+        b = np.array([
+            [0],
+            [1 / inertia]])
+
+        # provided the maximum values of states and actions are available,
+        # normalize linearized matrices, adhering to the following signal scheme
+        #
+        # normalized output <- normalize * matrix * denormalize <- normalized input
+        if self.state_action_max is not None:
+            state_norm = self._impl_get_state_norm()
+
+            a = np.linalg.multi_dot((state_norm, a, self._impl_get_state_denorm()))
+            b = np.linalg.multi_dot((state_norm, b, self._impl_get_action_denorm()))
+
+        return a, b
+
+class dlqr(deterministic):
+    def __init__(self, a: np.ndarray, b: np.ndarray, q: np.ndarray, r: np.ndarray) -> None:
+        a, b, q, r = map(np.atleast_2d, (a, b, q, r))
+        p = sp.linalg.solve_discrete_are(a, b, q, r)
+
+        #                      ~~~~ bpb ~~~~~         ~~ bpa ~~~
+        #                     |              |       |          |
+        # lqr gain, i.e. k = (b.T * p * b + r)^-1 * (b.T * p * a)
+        #                     |     |                |     |
+        #                     ~~ bp ~                ~~ bp ~
+        bp = b.T.dot(p)
+        bpb = bp.dot(b)
+        bpb += r
+        bpa = bp.dot(a)
+        self._impl_control = np.linalg.solve(bpb, bpa)
+        self._impl_parameters = p
+
+    def evaluate(self, domain: np.ndarray) -> np.ndarray:
+        domain = np.asarray(domain)
+        return -domain.dot(self._impl_control.T)
+
+    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return self._impl_parameters
+
+    @parameters.setter
+    def parameters(self, value) -> None:
+        self._impl_parameters = value
+
+    @property
+    def dims_n_i(self) -> int:
+        return np.shape(self._impl_control)[1]
+
+    @property
+    def dims_n_o(self) -> int:
+        return np.shape(self._impl_control)[0]
+
+
+# ---------------------------------------------------------------------------*/
+# function decorator to saturate the output of a deterministic function
+
+class saturated(deterministic):
+    def __init__(self, func: deterministic, clipping: float) -> None:
+        self._impl_func = func
+        self._impl_clipping = clipping
+
+    def evaluate(self, domain: np.ndarray) -> np.ndarray:
+        value = self._impl_func.evaluate(domain)
+        return np.clip(value, -self._impl_clipping, self._impl_clipping)
+
+    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+        return self._impl_func.differentiate(domain)
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return self._impl_func.parameters
+
+    @parameters.setter
+    def parameters(self, value) -> None:
+        self._impl_func.parameters = value
+
+    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
+        return self._impl_func.parameters_derivative(states)
+
+    @property
+    def dims_n_i(self) -> int:
+        return self._impl_func.dims_n_i
+
+    @property
+    def dims_n_o(self) -> int:
+        return self._impl_func.dims_n_o
