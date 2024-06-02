@@ -306,58 +306,48 @@ class dynamics(function, uncertainty):
 # ---------------------------------------------------------------------------*/
 # - inverted pendulum
 
-class pendulum_inv(deterministic):
+class pendulum_inv(function):
     def __init__(
             self,
             mass: float, length: float, friction: float,
-            state_action_max: tuple[list, list] = None) -> None:
+            policy: function = None,
+            normalization: tuple[list, list] = None) -> None:
+
         self.mass = mass
         self.length = length
         self.friction = friction
-        self.state_action_max = state_action_max
 
-    @util.stack_args(first=1)
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
-        return self.differentiate(domain)
+        self.policy = policy
+        self.normalization = normalization
 
-    def evaluate(self, domain: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
 
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Take time-derivative of pendulum dynamics by solving an ordinary differential equation,
-        where ``domain`` contains arrays of states and corresponding actions.
-        Every row of input arrays represents data to evaluate,
-        whereas columns represent dimensions.
-        """
-        state, action = np.split(domain, indices_or_sections=[2], axis=1)
+        # augment domain with actuation signal if policy is available
+        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+
+        # execute ordinary differential equation
+        state_d = self._execute_ode(domain)
+
+        return state_d if samples_n == 1 else [state_d for this in range(samples_n)]
+
+    def _execute_ode(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
+
         state, action = self.denormalize(state, action)
 
-        gravity = self.gravity
-        length = self.length
-        friction = self.friction
-        inertia = self.inertia
+        g = self.gravity
+        l = self.length
+        f = self.friction
+        i = self.inertia
 
         # physical dynamics
         angle, angular_velocity = np.split(state, indices_or_sections=2, axis=1)
-        angular_acceleration = gravity / length * np.sin(angle) + action / inertia
-        if friction > 0:
-            angular_acceleration -= friction / inertia * angular_velocity
+        angular_acceleration = g / l * np.sin(angle) + action / i
+        if f > 0: angular_acceleration -= f / i * angular_velocity
 
-        state_derivative = np.column_stack((angular_velocity, angular_acceleration))
-        state_derivative = self.normalize_state(state_derivative)
-        return state_derivative
+        state_d = np.column_stack((angular_velocity, angular_acceleration))
+        state_d = self.normalize_state(state_d)
 
-    @property
-    def parameters(self) -> np.ndarray:
-        raise NotImplementedError
-
-    @parameters.setter
-    def parameters(self, value) -> None:
-        raise NotImplementedError
-
-    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+        return state_d
 
     @property
     def dims_i_n(self) -> int:
@@ -375,73 +365,73 @@ class pendulum_inv(deterministic):
     def gravity(self):
         return 9.81
 
-    def _impl_get_state_denorm(self) -> np.ndarray:
-        return np.diag(np.atleast_1d(self.state_action_max[0]))
+    def _get_state_denorm(self) -> np.ndarray:
+        return np.diag(np.atleast_1d(self.normalization[0]))
 
-    def _impl_get_state_norm(self) -> np.ndarray:
-        return np.diag(np.diag(self._impl_get_state_denorm()) ** -1)
+    def _get_state_norm(self) -> np.ndarray:
+        return np.diag(np.diag(self._get_state_denorm()) ** -1)
 
-    def _impl_get_action_denorm(self) -> np.ndarray:
-        return np.diag(np.atleast_1d(self.state_action_max[1]))
+    def _get_action_denorm(self) -> np.ndarray:
+        return np.diag(np.atleast_1d(self.normalization[1]))
 
-    def _impl_get_action_norm(self) -> np.ndarray:
-        return np.diag(np.diag(self._impl_get_action_denorm()) ** -1)
+    def _get_action_norm(self) -> np.ndarray:
+        return np.diag(np.diag(self._get_action_denorm()) ** -1)
 
     def normalize_state(self, state: np.ndarray) -> np.ndarray:
-        if self.state_action_max is None:
+        if self.normalization is None:
             return state
 
-        return state.dot(self._impl_get_state_norm())
+        return state.dot(self._get_state_norm())
 
     def normalize_action(self, action: np.ndarray) -> np.ndarray:
-        if self.state_action_max is None:
+        if self.normalization is None:
             return action
 
-        return action.dot(self._impl_get_action_norm())
+        return action.dot(self._get_action_norm())
 
     def normalize(self, state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.normalize_state(state), self.normalize_action(action)
 
     def denormalize_state(self, state: np.ndarray) -> np.ndarray:
-        if self.state_action_max is None:
+        if self.normalization is None:
             return state
 
-        return state.dot(self._impl_get_state_denorm())
+        return state.dot(self._get_state_denorm())
 
     def denormalize_action(self, action: np.ndarray) -> np.ndarray:
-        if self.state_action_max is None:
+        if self.normalization is None:
             return action
 
-        return action.dot(self._impl_get_action_denorm())
+        return action.dot(self._get_action_denorm())
 
     def denormalize(self, state: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.denormalize_state(state), self.denormalize_action(action)
 
     def linearize(self) -> tuple[np.ndarray, np.ndarray]:
-        gravity = self.gravity
-        length = self.length
-        friction = self.friction
-        inertia = self.inertia
+        g = self.gravity
+        l = self.length
+        f = self.friction
+        i = self.inertia
 
         # linearized dynamics, where sinx = x
         a = np.array([
             [0, 1],
-            [gravity / length, -friction / inertia]])
+            [g / l, -f / i]])
 
         # action input
         b = np.array([
             [0],
-            [1 / inertia]])
+            [1 / i]])
 
         # provided the maximum values of states and actions are available,
         # normalize linearized matrices, adhering to the following signal scheme
         #
         # normalized output <- normalize * matrix * denormalize <- normalized input
-        if self.state_action_max is not None:
-            state_norm = self._impl_get_state_norm()
+        if self.normalization is not None:
+            state_norm = self._get_state_norm()
 
-            a = np.linalg.multi_dot((state_norm, a, self._impl_get_state_denorm()))
-            b = np.linalg.multi_dot((state_norm, b, self._impl_get_action_denorm()))
+            a = np.linalg.multi_dot((state_norm, a, self._get_state_denorm()))
+            b = np.linalg.multi_dot((state_norm, b, self._get_action_denorm()))
 
         return a, b
 
