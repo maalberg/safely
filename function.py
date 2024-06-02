@@ -74,7 +74,7 @@ class uncertain(metaclass=interface):
 # ---------------------------------------------------------------------------*/
 # differentiable function
 
-class differentiable(metaclass=interface):
+class differentiable(function):
     @abstractmethod
     def differentiate(self, domain: np.ndarray) -> np.ndarray:
         """
@@ -140,7 +140,7 @@ class deterministic(function):
 # ---------------------------------------------------------------------------*/
 # quadratic function
 
-class quadratic(function, differentiable):
+class quadratic(differentiable):
     def __init__(self, parameters: np.ndarray) -> None:
         self._params = np.atleast_2d(parameters)
 

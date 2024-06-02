@@ -5,7 +5,7 @@ import domain as dom
 class lyapunov:
     def __init__(
             self,
-            candidate: fun.deterministic, domain: dom.gridworld,
+            candidate: fun.differentiable, domain: dom.gridworld,
             roa_init: list[bool] = None) -> None:
 
         self.candidate = candidate
