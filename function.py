@@ -44,21 +44,21 @@ class function(metaclass=interface):
 
 
 # ---------------------------------------------------------------------------*/
-# - uncertain function
+# - uncertainty
 
-class uncertain(metaclass=interface):
+class uncertainty(metaclass=interface):
     @abstractmethod
     def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Evaluate function error in given ``domain`` and return a predicted mean value
-        together with a corresponding variance.
+        Evaluate the error of this uncertainty in given ``domain`` and return a predicted
+        mean value together with a corresponding variance.
         """
         raise NotImplementedError
 
     @abstractmethod
     def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
         """
-        Let function observe datapoints in ``domain`` with given ``value``.
+        Let this uncertainty observe datapoints in ``domain`` with given ``value``.
         """
         raise NotImplementedError
 
@@ -66,7 +66,7 @@ class uncertain(metaclass=interface):
     @abstractmethod
     def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
         """
-        Datapoints observed by this function, see method ``observe_datapoints``.
+        Datapoints observed by this uncertainty, see method ``observe_datapoints``.
         """
         raise NotImplementedError
 
@@ -183,7 +183,7 @@ class linear(function):
 # ---------------------------------------------------------------------------*/
 # - dynamics
 
-class dynamics(function, uncertain):
+class dynamics(function, uncertainty):
     def __init__(
             self,
             model: function, policy: function = None, error: gpy.kern.Kern = None) -> None:

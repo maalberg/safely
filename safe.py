@@ -32,7 +32,7 @@ class lyapunov:
 
     def measure_safety(
             self,
-            dynamics: fun.uncertain,
+            dynamics: fun.uncertainty,
             ci: float = 1.96) -> tuple[np.ndarray, np.ndarray]:
         """
         This method calculates the boundaries of the derivative of a Lyapunov function candidate
@@ -139,7 +139,7 @@ class lyapunov:
 
         return search_interval
 
-    def find_uncertainty(self, uncertainty: fun.uncertain) -> np.ndarray:
+    def find_uncertainty(self, uncertainty: fun.uncertainty) -> np.ndarray:
         """
         Find a state with maximum uncertainty which is still safe to sample given the ``dynamics``
         """
