@@ -28,7 +28,7 @@ class lyapunov:
     def sample(self, dynamics: fun.function, samples_n: int = 1) -> np.ndarray:
         samples = dynamics(self._impl_domain.states, samples_n=samples_n)
 
-        return [self.differentiate_along(sample) for sample in samples]
+        return self.differentiate_along(samples) if samples_n == 1 else [self.differentiate_along(sample) for sample in samples]
 
     def measure_safety(
             self,
@@ -94,7 +94,7 @@ class lyapunov:
         # introduce an interval (0, Vmax] of Lyapunov values V(x),
         # where we want to find the maximum boundary c,
         # such that V(x) <= c for c > 0
-        lyap = self.candidate(self._impl_domain.states)[0]
+        lyap = self.candidate(self._impl_domain.states)
         lyap_max = np.max(lyap)
         search_accuracy = lyap_max / 1e10
         search_interval = [0, lyap_max + search_accuracy]
@@ -161,13 +161,13 @@ class lyapunov:
         Decrease uncertainty of ``dynamics`` by letting it sample a safe state which has maximum uncertainty
         """
         state_uncertain = self.find_uncertainty(dynamics)
-        dynamics.observe_datapoints(state_uncertain, dynamics(state_uncertain)[0])
+        dynamics.observe_datapoints(state_uncertain, dynamics(state_uncertain))
 
     @property
     def roa_boundary(self) -> float:
         domain = self.domain
         roa = self.roa
-        value = self.candidate(domain)[0]
+        value = self.candidate(domain)
         return domain[roa][np.argmax(value[roa])]
 
     @property

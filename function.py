@@ -18,10 +18,11 @@ import utilities as util
 
 class function(metaclass=interface):
     @abstractmethod
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray]:
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
         """
         Take ``samples_n`` number of function samples with ``domain`` as input and
-        return these samples in a tuple.
+        return these samples in a tuple. If ``samples_n`` equals 1, then
+        the tuple is dropped and the sample itself is returned.
         """
         raise NotImplementedError
 
@@ -143,9 +144,9 @@ class quadratic(function, differentiable):
     def __init__(self, parameters: np.ndarray) -> None:
         self._params = np.atleast_2d(parameters)
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray]:
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
         sample = np.sum(domain.dot(self._params) * domain, axis=1)
-        return [sample for this in range(samples_n)]
+        return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
     def differentiate(self, domain: np.ndarray) -> np.ndarray:
         return 2 * domain.dot(self._params)
@@ -160,48 +161,23 @@ class quadratic(function, differentiable):
 
 
 # ---------------------------------------------------------------------------*/
-# linearity
+# linear function
 
-class linearity(deterministic):
-    def __init__(self, matrices: list[np.ndarray]) -> None:
-        self._impl_dynamics = np.column_stack(tuple(map(np.atleast_2d, matrices)))
+class linear(function):
+    def __init__(self, parameters: list[np.ndarray]) -> None:
+        self._parameters = np.column_stack(tuple(map(np.atleast_2d, parameters)))
 
-    @util.stack_args(first=1)
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Evaluate linear function derivative on ``domain`` and return a tuple with derivatives
-        and zero uncertainty
-        """
-        return self.differentiate(domain)
-
-    def evaluate(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Implement in case there is a need to evaluate y = C*x,
-        where C is output matrix, x is state and y is an observed system variable.
-        """
-        raise NotImplementedError
-
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        return domain.dot(self._impl_dynamics.T)
-
-    @property
-    def parameters(self) -> np.ndarray:
-        return self._impl_dynamics
-
-    @parameters.setter
-    def parameters(self, value) -> None:
-        self._impl_dynamics = value
-
-    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+        sample = domain.dot(self._parameters.T)
+        return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
     @property
     def dims_i_n(self) -> int:
-        return np.shape(self._impl_dynamics)[1]
+        return np.shape(self._parameters)[1]
 
     @property
     def dims_o_n(self) -> int:
-        return np.shape(self._impl_dynamics)[0]
+        return np.shape(self._parameters)[0]
 
 
 # ---------------------------------------------------------------------------*/
@@ -233,11 +209,14 @@ class dynamics(function, uncertain):
                 mean_function=gp_mean)
 
             # define a sampling method for stochastic dynamics
-            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray]:
+            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray] | np.ndarray:
                 samples = gp.posterior_samples(domain, size=samples_n)
 
                 # format samples as a tuple of samples
-                return [samples[..., this_sample] for this_sample in range(samples.shape[-1])]
+                samples = [samples[..., this_sample] for this_sample in range(samples.shape[-1])]
+
+                # but drop the tuple if there is only one sample requested
+                return samples[0] if samples_n == 1 else samples
 
             self._sampling = sample
 
@@ -265,7 +244,7 @@ class dynamics(function, uncertain):
             def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray]:
                 sample = model(domain)
 
-                return [sample for this in range(samples_n)]
+                return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
             self._sampling = sample
 
@@ -290,7 +269,7 @@ class dynamics(function, uncertain):
 
             self._observations = observed
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> np.ndarray:
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
 
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
