@@ -1,4 +1,5 @@
 import numpy as np
+import scipy as sp
 from functools import wraps
 
 def stack_args(first: int = 0):
@@ -26,3 +27,21 @@ def stack_args(first: int = 0):
             return func(*args, **kwargs)
         return wrapped_func
     return wrap
+
+def make_dlqr(a: np.ndarray, b: np.ndarray, q: np.ndarray, r: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    a, b, q, r = map(np.atleast_2d, (a, b, q, r))
+    p = sp.linalg.solve_discrete_are(a, b, q, r)
+
+    #                      ~~~~ bpb ~~~~~         ~~ bpa ~~~
+    #                     |              |       |          |
+    # lqr gain, i.e. k = (b.T * p * b + r)^-1 * (b.T * p * a)
+    #                     |     |                |     |
+    #                     ~~ bp ~                ~~ bp ~
+    bp = b.T.dot(p)
+    bpb = bp.dot(b)
+    bpb += r
+    bpa = bp.dot(a)
+    control = np.linalg.solve(bpb, bpa)
+    parameters = p
+
+    return control, parameters

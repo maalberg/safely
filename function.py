@@ -445,49 +445,6 @@ class pendulum_inv(deterministic):
 
         return a, b
 
-class dlqr(deterministic):
-    def __init__(self, a: np.ndarray, b: np.ndarray, q: np.ndarray, r: np.ndarray) -> None:
-        a, b, q, r = map(np.atleast_2d, (a, b, q, r))
-        p = sp.linalg.solve_discrete_are(a, b, q, r)
-
-        #                      ~~~~ bpb ~~~~~         ~~ bpa ~~~
-        #                     |              |       |          |
-        # lqr gain, i.e. k = (b.T * p * b + r)^-1 * (b.T * p * a)
-        #                     |     |                |     |
-        #                     ~~ bp ~                ~~ bp ~
-        bp = b.T.dot(p)
-        bpb = bp.dot(b)
-        bpb += r
-        bpa = bp.dot(a)
-        self._impl_control = np.linalg.solve(bpb, bpa)
-        self._impl_parameters = p
-
-    def evaluate(self, domain: np.ndarray) -> np.ndarray:
-        domain = np.asarray(domain)
-        return -domain.dot(self._impl_control.T)
-
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-
-    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-
-    @property
-    def parameters(self) -> np.ndarray:
-        return self._impl_parameters
-
-    @parameters.setter
-    def parameters(self, value) -> None:
-        self._impl_parameters = value
-
-    @property
-    def dims_i_n(self) -> int:
-        return np.shape(self._impl_control)[1]
-
-    @property
-    def dims_o_n(self) -> int:
-        return np.shape(self._impl_control)[0]
-
 
 # ---------------------------------------------------------------------------*/
 # decorator to saturate the output of a function
