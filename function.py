@@ -2,7 +2,6 @@ from abc import abstractmethod
 from abc import ABCMeta as interface
 
 import numpy as np
-import scipy as sp
 
 from itertools import product as cartesian
 from scipy.spatial import Delaunay as delaunay
@@ -10,7 +9,6 @@ from scipy.sparse import coo_matrix as sparse_coordinates
 import GPy as gpy
 
 import domain as dom
-import utilities as util
 
 
 # ---------------------------------------------------------------------------*/
@@ -79,60 +77,6 @@ class differentiable(function):
     def differentiate(self, domain: np.ndarray) -> np.ndarray:
         """
         Differentiate this function on given ``domain`` and return resulting values.
-        """
-        raise NotImplementedError
-
-
-# ---------------------------------------------------------------------------*/
-# deterministic function
-
-class deterministic(function):
-    @util.stack_args(first=1)
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Evaluate deterministic function on ``domain`` and return function values
-        """
-        return self.evaluate(domain)
-
-    @abstractmethod
-    def evaluate(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Evaluate this deterministic function with ``domain`` array as input and
-        return the resulting values
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        """
-        Evaluate the derivative of this deterministic function with ``domain`` array as input and
-        return the resulting values
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def parameters(self) -> np.ndarray:
-        """
-        Parameters that this deterministic function is parameterized with
-        """
-        raise NotImplementedError
-
-    @parameters.setter
-    @abstractmethod
-    def parameters(self, value: np.ndarray) -> None:
-        """
-        Parameterize this deterministic function with new parameters given as ``value``
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
-        """
-        Return a matrix which encodes a transition from current function parameters
-        to given ``states``, i.e. f(s) = A * p, where s is the vector
-        of ``states``, p is the vector of current parameters,
-        and A is the matrix returned.
         """
         raise NotImplementedError
 
