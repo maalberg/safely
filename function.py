@@ -490,35 +490,21 @@ class dlqr(deterministic):
 
 
 # ---------------------------------------------------------------------------*/
-# function decorator to saturate the output of a deterministic function
+# decorator to saturate the output of a function
 
-class saturated(deterministic):
-    def __init__(self, func: deterministic, clipping: float) -> None:
-        self._impl_func = func
-        self._impl_clipping = clipping
+class saturated(function):
+    def __init__(self, func: function, clip: float) -> None:
+        self._func = func
+        self._clip = clip
 
-    def evaluate(self, domain: np.ndarray) -> np.ndarray:
-        value = self._impl_func.evaluate(domain)
-        return np.clip(value, -self._impl_clipping, self._impl_clipping)
-
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        return self._impl_func.differentiate(domain)
-
-    @property
-    def parameters(self) -> np.ndarray:
-        return self._impl_func.parameters
-
-    @parameters.setter
-    def parameters(self, value) -> None:
-        self._impl_func.parameters = value
-
-    def parameters_derivative(self, states: np.ndarray) -> np.ndarray:
-        return self._impl_func.parameters_derivative(states)
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+        value = self._func(domain, samples_n)
+        return np.clip(value, -self._clip, self._clip)
 
     @property
     def dims_i_n(self) -> int:
-        return self._impl_func.dims_i_n
+        return self._func.dims_i_n
 
     @property
     def dims_o_n(self) -> int:
-        return self._impl_func.dims_o_n
+        return self._func.dims_o_n
