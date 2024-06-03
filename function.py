@@ -125,9 +125,16 @@ class linear(function):
 
 
 # ---------------------------------------------------------------------------*/
+# - stochastic function
+
+class stochastic(function, uncertainty):
+    pass
+
+
+# ---------------------------------------------------------------------------*/
 # - dynamics
 
-class dynamics(function, uncertainty):
+class dynamics(stochastic):
     def __init__(
             self,
             model: function, policy: function = None, error: gpy.kern.Kern = None) -> None:
