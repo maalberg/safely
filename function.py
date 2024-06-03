@@ -406,3 +406,26 @@ class saturated(function):
     @property
     def dims_o_n(self) -> int:
         return self._func.dims_o_n
+
+
+# ---------------------------------------------------------------------------*/
+# - one-dimensional stochastic functions stacked to form a vector function
+
+class stochastic_stacked(function):
+    def __init__(self, functions: list[stochastic]) -> None:
+        self._funcs = functions
+
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+
+        # evaluate the means of all stochastic functions inside the list
+        sample = np.column_stack([func.evaluate_error(domain)[0] for func in self._funcs])
+
+        return sample if samples_n == 1 else [sample for this in range(samples_n)]
+
+    @property
+    def dims_i_n(self) -> int:
+        return self._funcs[0].dims_i_n
+
+    @property
+    def dims_o_n(self) -> int:
+        return np.sum([func.dims_o_n for func in self._funcs])
