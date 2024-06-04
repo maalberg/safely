@@ -82,14 +82,14 @@ class differentiable(function):
 
 
 # ---------------------------------------------------------------------------*/
-# quadratic function
+# - quadratic function
 
 class quadratic(differentiable):
     def __init__(self, parameters: np.ndarray) -> None:
         self._params = np.atleast_2d(parameters)
 
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
-        sample = np.sum(domain.dot(self._params) * domain, axis=1)
+        sample = np.sum(domain.dot(self._params) * domain, axis=1, keepdims=True)
         return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
     def differentiate(self, domain: np.ndarray) -> np.ndarray:

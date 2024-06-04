@@ -94,7 +94,7 @@ class lyapunov:
         # introduce an interval (0, Vmax] of Lyapunov values V(x),
         # where we want to find the maximum boundary c,
         # such that V(x) <= c for c > 0
-        lyap = self.candidate(self._impl_domain.states)
+        lyap = self.candidate(self._impl_domain.states).squeeze()
         lyap_max = np.max(lyap)
         search_accuracy = lyap_max / 1e10
         search_interval = [0, lyap_max + search_accuracy]
