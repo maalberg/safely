@@ -9,6 +9,7 @@ from scipy.sparse import coo_matrix as sparse_coordinates
 import GPy as gpy
 
 import domain as dom
+import utilities as utils
 
 
 # ---------------------------------------------------------------------------*/
@@ -70,7 +71,7 @@ class uncertainty(metaclass=interface):
 
 
 # ---------------------------------------------------------------------------*/
-# differentiable function
+# - differentiable function
 
 class differentiable(function):
     @abstractmethod
@@ -105,7 +106,7 @@ class quadratic(differentiable):
 
 
 # ---------------------------------------------------------------------------*/
-# linear function
+# - linear function
 
 class linear(function):
     def __init__(self, parameters: list[np.ndarray]) -> None:
@@ -388,7 +389,7 @@ class pendulum_inv(function):
 
 
 # ---------------------------------------------------------------------------*/
-# decorator to saturate the output of a function
+# - decorator to saturate the output of a function
 
 class saturated(function):
     def __init__(self, func: function, clip: float) -> None:
@@ -429,3 +430,257 @@ class stochastic_stacked(function):
     @property
     def dims_o_n(self) -> int:
         return np.sum([func.dims_o_n for func in self._funcs])
+
+
+# ---------------------------------------------------------------------------*/
+# - triangulation as a function approximator
+
+class triangulation(function):
+    def __init__(self, domain: dom.gridworld, values: np.ndarray) -> None:
+        """
+        This triangulation will approximate a function on the given ``domain`` and
+        is parameterized with ``values``, where every row holds a value
+        corresponding to a data point from the ``domain``
+        """
+        self._domain = domain
+
+        # make sure there is at least one row in given values
+        self._parameters = np.atleast_2d(values)
+
+        # since the minimum number of dimensions
+        # supported by SciPy implementation of Delaunay algorithm is 2, check given domain
+        if len(self._domain.disc) == 1:
+            # define two points of a 1D unit hyper-rectangle
+            # and instantiate a corresponding delaynay triangulation
+            unit_points = np.array([[0], self._domain.disc])
+            self._tri = utils.delaunay1d(unit_points)
+        else:
+            # based on domain discretization in every dimension,
+            # define the limits of a unit hyper-rectangle
+            unit_lim = np.diag(self._domain.disc)
+
+            # use a cartesian product to derive the corresponding vertices (points)
+            unit_points = np.array(list(cartesian(*unit_lim)))
+
+            # perform triangulation of the unit hyper-rectangle
+            self._tri = delaunay(unit_points)
+
+        self._unit_simplices = self._map_simplices(self._tri, self._domain)
+        self._hyperplanes = self._init_hyperplanes(
+            self._tri,
+            self._unit_simplices,
+            self._domain)
+
+        self.nsimplex = self._tri.nsimplex * self._domain.rectangles_n
+
+    def _map_simplices(self, triangulation, domain: dom.gridworld) -> np.ndarray:
+        """
+        Derive simplices from the ``triangulation`` of a unit hyper-rectangle, which
+        contains point indices mapped to the original ``domain``.
+
+        The function returns the remapped simplices.
+        """
+
+        # get simplices from the internal triangulation of a unit domain
+        #
+        # the simplices contain the indeces of points which form
+        # these simplices
+        unit_simplices = triangulation.simplices
+
+        # locate states [their indices] in the original domain,
+        # which correspond to the points inside the internal unit hyper-rectangle
+        #
+        # note that such interdomain localisation is possible, due to
+        # the regulatory of the original domain grid
+        original_indices = domain.locate_states(
+            triangulation.points + domain.offset)
+
+        unit_simplices_mapped = np.empty_like(unit_simplices)
+
+        # replace the indices inside the unit simplices with original ones
+        for this, index in enumerate(original_indices):
+            unit_simplices_mapped[unit_simplices == this] = index
+
+        return unit_simplices_mapped
+
+    def _init_hyperplanes(self, triangulation, simplices: np.ndarray, domain: dom.gridworld) -> np.ndarray:
+        """
+        Initialize hyperplane equations based on ``triangulation`` of a unit hyper-rectangle,
+        ``simplices`` mapped into the original domain and
+        the original ``domain`` itself.
+
+        If we consider a linear program Ax = b, then this method returns A^-1, which can then be
+        used to find optimal x = A^-1 b .
+        """
+        # there are as many hyperplanes as there are simplices in our unit hyper-rectangle,
+        # then each hyperplane is represented by a n-by-n matrix of coefficients,
+        # where n is equal to the number of input dimensions
+        hyperplanes = np.empty((triangulation.nsimplex, domain.dims_n, domain.dims_n))
+
+        # compute equation coefficients for every hyperplane (simplex)
+        for this, simplex in enumerate(simplices):
+
+            # get states, or points, in the original domain that form the current simplex,
+            # i.e. lie on this hyperplane
+            simplex_points = domain.get_states(simplex)
+
+            # subtract subsequent points from the first one to get vectors which lie in the plane, e.g.
+            # for two dimensions there will be three points of a triangular plane
+            # and, thus, two resulting vectors lying in this plane
+            simplex_vectors = simplex_points[1:] - simplex_points[:1]
+
+            # the simplex vectors above form a linear system of equations, e.g.
+            # there will be two equations of the form ax1 + bx2 = c for a two-dimensional
+            # case, so you get a 2-by-2 matrix A of coefficients. This matrix can be inverted to solve
+            # a linear program, such as A^-1 A x = A^-1 b => x = A^-1 b
+            hyperplanes[this] = np.linalg.inv(simplex_vectors)
+
+        return hyperplanes
+
+    def find_simplex(self, points: np.ndarray) -> np.ndarray:
+        """
+        Find simplices, or triangles, which contain given ``points`` and
+        return the indices of these simplices w.r.t. to the original domain.
+        """
+
+        # convert given points to the domain of a unit hyper-rectangle
+        #
+        # > the points are first shifted from the original domain to a
+        #   zero-origin domain, i.e. [0, point_max - original_domain_offset], and then
+        #
+        # > the points are scaled down (note the modulus operation) to the unit hyper-rectangle,
+        #   whose size is denoted by the discretization of the original domain
+        unit_points = self._domain.shift_states(points, needs_clipping=True) % self._domain.disc
+
+        # find which points belong to which triangle inside a unit hyper-rectangle
+        unit_simplices = np.atleast_1d(self._tri.find_simplex(unit_points))
+
+        # locate rectangles in the original domain, which are closest to given points
+        rectangles = self._domain.locate_rectangles(points)
+
+        # propagate unit simplices to rectangles in the original domain, e.g.
+        # in case of 20-by-20 points 2D grid there will be 19-by-19,
+        # or 361, rectangles; at the same time a unit hyper-
+        # rectangle will consist of 2 simplices,
+        # so we should get 361*2=722 simplices
+        # in the original domain, note
+        # the multiplication by
+        # nsimplex below.
+        return unit_simplices + rectangles * self._tri.nsimplex
+
+    def get_simplices(self, indices: np.ndarray) -> np.ndarray:
+        """
+        Get the indices of points forming every simplex in the original domain
+        that resides at given ``indices``.
+        """
+
+        # convert given original domain indices to the unit domain ones
+        unit_indices = np.remainder(indices, self._tri.nsimplex)
+
+        # extract unit simplices, which contain indices pointing to the original domain
+        simplices = self._unit_simplices[unit_indices].copy()
+
+        # locate the upper-left corners of rectangles in the original domain that
+        # correspond to given simplex indices
+        #
+        # convertion of indices to rectangles is based on the fact that
+        # a rectangle will contain nsimplex simplices, so
+        # we can perform the corresponding division
+        rectangles_origins = self._domain.locate_origins(
+            np.floor_divide(indices, self._tri.nsimplex))
+
+        if simplices.ndim > 1:
+            rectangles_origins = rectangles_origins[:, np.newaxis] # add extra dimension
+
+        simplices += rectangles_origins
+        return simplices
+
+    def _get_weights(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Calculate a linear combination of triangulation weights for given ``points`` and
+        return these weights together with simplices, in
+        which the given ``points`` reside.
+        """
+
+        # find simplices in the original domain [their indices actually],
+        # in which given points reside
+        points_simplices = self.find_simplex(points)
+
+        # extract simplices from the original domain at the found indices,
+        # such that every simplex [basically a triangle]
+        # is a row with three indices
+        simplices = self.get_simplices(points_simplices)
+
+        # convert [note the modulus operation] the indeces of simpleces in the original domain
+        # to the ones in the unit domain
+        unit_simpleces = points_simplices % self._tri.nsimplex
+
+        # geometrically a hyperplane ax = b can be interpreted as a set of points x with
+        # a constant inner product with a given vector a, and b is then the
+        # inner product constant showing an offset from the origin.
+        #
+        # our intention here is to compute optimal weights x, based on the linear equation
+        # of a hyperplane, i.e. x = A^-1 * b
+        #
+        # therefore, first of all get hyperplane coefficients, or A^-1,
+        # corresponding to given unit simplices
+        hyperplanes = self._hyperplanes[unit_simpleces]
+
+        # next, in order to have the constant b, we need to know the origins
+        origins = self._domain.get_states(simplices[:, 0])
+
+        # prepare hyperplane points by clipping them
+        points = np.clip(
+            points,
+            self._domain.dims_lim[:, 0],
+            self._domain.dims_lim[:, 1])
+
+        # .. and determine the offset of points from the origin
+        offset = points - origins
+
+        # prepare an empty array to store weights
+        #
+        # array size is specified as (number of points, number of domain dimensions + 1), e.g.
+        # in a two-dimensional case a simplex is a triangle with three points, so
+        # number of domain dimensions + 1 yields 3.
+        weights = np.empty((len(points), self._domain.dims_n + 1))
+
+        # take a dot product x = A^-1 * b to compute weights
+        #
+        # in a two-dimensional case, the dot product produces two dimensions as well, yet
+        # we have an array with three dimensions, so we write the result
+        # the last two dimensions of the weights array.
+        np.sum(offset[:, :, np.newaxis] * hyperplanes, axis=1, out=weights[:, 1:])
+
+        # now we still need to fill the first dimension of the weights array,
+        # so we use the property of affine sets where the coefficients
+        # of points sum to one, see Boyd and Vandenberghe, 2004.
+        weights[:, 0] = 1 - np.sum(weights[:, 1:], axis=1)
+
+        return weights, simplices
+
+    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+
+        # TODO: document!
+
+        # make sure state has at least one row, i.e. one data point to sample
+        domain = np.atleast_2d(domain)
+
+        weights, simplices = self._get_weights(domain)
+
+        # sample function values
+        parameters = self._parameters[simplices]
+
+        return np.sum(weights[:, :, np.newaxis] * parameters, axis=1).reshape(-1, 1)
+
+    @property
+    def dims_i_n(self) -> int:
+        return self._domain.dims_n
+
+    @property
+    def dims_o_n(self) -> int:
+        return 1
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return self._parameters
