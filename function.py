@@ -449,15 +449,15 @@ class triangulation(function):
 
         # since the minimum number of dimensions
         # supported by SciPy implementation of Delaunay algorithm is 2, check given domain
-        if len(self._domain.disc) == 1:
+        if len(self._domain.step) == 1:
             # define two points of a 1D unit hyper-rectangle
             # and instantiate a corresponding delaynay triangulation
-            unit_points = np.array([[0], self._domain.disc])
+            unit_points = np.array([[0], self._domain.step])
             self._tri = utils.delaunay1d(unit_points)
         else:
             # based on domain discretization in every dimension,
             # define the limits of a unit hyper-rectangle
-            unit_lim = np.diag(self._domain.disc)
+            unit_lim = np.diag(self._domain.step)
 
             # use a cartesian product to derive the corresponding vertices (points)
             unit_points = np.array(list(cartesian(*unit_lim)))
@@ -550,7 +550,7 @@ class triangulation(function):
         #
         # > the points are scaled down (note the modulus operation) to the unit hyper-rectangle,
         #   whose size is denoted by the discretization of the original domain
-        unit_points = self._domain.shift_states(points, needs_clipping=True) % self._domain.disc
+        unit_points = self._domain.shift_states(points, needs_clipping=True) % self._domain.step
 
         # find which points belong to which triangle inside a unit hyper-rectangle
         unit_simplices = np.atleast_1d(self._tri.find_simplex(unit_points))

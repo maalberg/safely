@@ -3,33 +3,36 @@ import numpy as np
 class gridworld:
     def __init__(self, dims_lim: list[tuple], dims_sz: list[int]) -> None:
 
-        self._impl_dims_lim = np.atleast_2d(dims_lim)
-        self._impl_dims_n = len(self._impl_dims_lim)
+        self._dims_lim = np.atleast_2d(dims_lim)
+        self._dims_n = len(self._dims_lim)
+        self._dims_sz = np.broadcast_to(dims_sz, self._dims_n)
 
-        # derive grid axes demarcated with discrete points (ticks on these axes)
-        self._impl_dims_sz = np.broadcast_to(dims_sz, self._impl_dims_n)
-        self._impl_axes = np.atleast_2d([
-            np.linspace(lo, hi, n)
-            for (lo, hi), n in zip(self._impl_dims_lim, self._impl_dims_sz)
-        ])
+        # demarcate grid axes as evenly spaced intervals,
+        # and since the size of dimensions may be different,
+        # it is important to keep the axes as a list, not as a numpy array
+        self._axes = [
+            np.linspace(start, stop, n)
+            for (start, stop), n in zip(self._dims_lim, self._dims_sz)
+        ]
 
-        # get discretization along each axis
-        self._impl_disc = np.diff(self._impl_axes, axis=1)[:, 0]
+        # derive discretization steps along each axis
+        self._step = np.asarray([axis[1] - axis[0] for axis in self._axes])
 
-        # initialize grid points property to none
-        self._impl_grid_points = None
+        # create grid points
+        mesh = np.meshgrid(*self._axes, indexing='ij') # asterisk unpacks axes into axes[0], axes[1], etc.
+        self._points = np.column_stack(list(col.ravel() for col in mesh)) # ravel returns a flattened view of an array, not a copy
 
     @property
     def dims_n(self) -> int:
-        return self._impl_dims_n
+        return self._dims_n
 
     @property
     def dims_lim(self) -> np.ndarray:
-        return self._impl_dims_lim
+        return self._dims_lim
 
     @property
     def dims_sz(self) -> np.ndarray:
-        return self._impl_dims_sz
+        return self._dims_sz
 
     @property
     def rectangles_n(self) -> int:
@@ -41,22 +44,18 @@ class gridworld:
 
     @property
     def states(self) -> np.ndarray:
-        if self._impl_grid_points is None:
-            mesh = np.meshgrid(*self._impl_axes, indexing='ij') # asterisk stands for argument unpacking
-            self._impl_grid_points = np.column_stack(list(col.ravel() for col in mesh)) # ravel returns a flattened view of an array, not a copy
-
-        return self._impl_grid_points
+        return self._points
 
     @property
-    def disc(self) -> float:
+    def step(self) -> np.ndarray:
         """
-        Property holding the discretization step of this domain as a float value
+        Step(s) that this grid is discretized with
         """
-        return self._impl_disc
+        return self._step
 
     @property
     def dims_axes(self) -> np.ndarray:
-        return self._impl_axes
+        return self._axes
 
     def __len__(self) -> int:
         return np.prod(self.dims_sz)
@@ -74,7 +73,7 @@ class gridworld:
         indices = np.row_stack(np.unravel_index(indices, self.dims_sz)).T
 
         # convert indices to states
-        return indices * self.disc + self.offset
+        return indices * self.step + self.offset
 
     def locate_states(self, states: np.ndarray) -> np.ndarray:
         """
@@ -83,7 +82,7 @@ class gridworld:
         states = np.atleast_2d(states)
 
         # calculate locations as integers
-        locations = (states - self.offset) * (1. / self.disc)
+        locations = (states - self.offset) * (1. / self.step)
         locations = np.rint(locations).astype(int) # round float numbers to their nearest integers
 
         # convert a tuple of index arrays - note the transpose - into an array of flat indices
