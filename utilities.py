@@ -87,4 +87,4 @@ def plot3d_triangulation(tri):
         states[:, 0], states[:, 1], parameters[:, 0],
         triangles=simplices)
 
-    return ax
+    return fig, ax
