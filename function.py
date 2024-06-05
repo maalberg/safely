@@ -262,7 +262,7 @@ class pendulum_inv(function):
     def __init__(
             self,
             mass: float, length: float, friction: float,
-            policy: function = None,
+            policy: function = None, timestep: float = 1.0,
             normalization: tuple[list, list] = None) -> None:
 
         self.mass = mass
@@ -270,36 +270,65 @@ class pendulum_inv(function):
         self.friction = friction
 
         self.policy = policy
+        self.timestep = timestep
         self.normalization = normalization
 
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
 
+        # make sure there is at least one row,
+        # i.e. state (possibly with action), in domain argument
+        domain = np.atleast_2d(domain)
+
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
 
-        # execute ordinary differential equation
-        state_d = self._execute_ode(domain)
+        # call internal dynamics
+        value = self._solve_ode(domain)
 
-        return state_d if samples_n == 1 else [state_d for this in range(samples_n)]
+        return value if samples_n == 1 else [value for this in range(samples_n)]
 
-    def _execute_ode(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
+    def _solve_ode(self, domain: np.ndarray) -> np.ndarray:
+        """
+        Solve the ordinary differential equation of this pendulum given ``domain`` as input.
+        It is expected that ``domain`` contains the denormalized state of
+        the pendulum, as well as the denormalized control input.
+        This method uses Euler's integration to
+        compute the next state.
+        """
 
+        # extract state and actions from given domain and denormalize them
+        state, action = np.split(domain, indices_or_sections=[2], axis=1)
         state, action = self.denormalize(state, action)
 
+        # use Euler's method to solve the ordinary differential equation of this pendulum
+        integration_steps_n = 10
+        dt = self.timestep / integration_steps_n
+        for step in range(integration_steps_n):
+            state_derivative = self._differentiate(state, action)
+            state = state + dt * state_derivative
+
+        # normalize the state back and return it
+        state = self.normalize_state(state)
+        return state
+
+    def _differentiate(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
+        """
+        Based on denormalized ``state`` and ``action``, use the ordinary differential equation
+        of this inverted pendulum to compute a time derivative of
+        the pendulum's dynamics.
+        """
         g = self.gravity
         l = self.length
         f = self.friction
         i = self.inertia
 
-        # physical dynamics
+        # calculate the time-derivative of the current state
+        # using the ordinary differential equation of this pendulum
         angle, angular_velocity = np.split(state, indices_or_sections=2, axis=1)
         angular_acceleration = g / l * np.sin(angle) + action / i
         if f > 0: angular_acceleration -= f / i * angular_velocity
 
-        state_d = np.column_stack((angular_velocity, angular_acceleration))
-        state_d = self.normalize_state(state_d)
-
-        return state_d
+        return np.column_stack((angular_velocity, angular_acceleration))
 
     @property
     def dims_i_n(self) -> int:
