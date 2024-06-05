@@ -2,10 +2,11 @@ from abc import abstractmethod
 from abc import ABCMeta as interface
 
 import numpy as np
-
-from itertools import product as cartesian
+from scipy import signal
 from scipy.spatial import Delaunay as delaunay
 from scipy.sparse import coo_matrix as sparse_coordinates
+
+from itertools import product as cartesian
 import GPy as gpy
 
 import domain as dom
@@ -261,17 +262,21 @@ class dynamics(stochastic):
 class pendulum_inv(function):
     def __init__(
             self,
-            mass: float, length: float, friction: float,
-            policy: function = None, timestep: float = 1.0,
-            normalization: tuple[list, list] = None) -> None:
+            mass: float, length: float, friction: float = 0.0,
+            normalization: tuple[list, list] = None,
+            timestep: float = 0.01) -> None:
 
         self.mass = mass
         self.length = length
         self.friction = friction
 
-        self.policy = policy
         self.timestep = timestep
         self.normalization = normalization
+
+        # policy is initially set to none, because the user may
+        # first require to instantiate this class in order to obtain a
+        # linearized model for control, and only after that the user can assign a proper policy
+        self.policy = None
 
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
 
@@ -285,6 +290,7 @@ class pendulum_inv(function):
         # call internal dynamics
         value = self._solve_ode(domain)
 
+        # repeat values (samples) to respect the protocol of this function
         return value if samples_n == 1 else [value for this in range(samples_n)]
 
     def _solve_ode(self, domain: np.ndarray) -> np.ndarray:
@@ -389,6 +395,11 @@ class pendulum_inv(function):
         return self.denormalize_state(state), self.denormalize_action(action)
 
     def linearize(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Linearize this pendulum and return discretized system and input matrices.
+        Provided normalization has been specified, the
+        returned matrices are normalized as well.
+        """
         g = self.gravity
         l = self.length
         f = self.friction
@@ -414,7 +425,13 @@ class pendulum_inv(function):
             a = np.linalg.multi_dot((state_norm, a, self._get_state_denorm()))
             b = np.linalg.multi_dot((state_norm, b, self._get_action_denorm()))
 
-        return a, b
+        # discretize this pendulum based on time step
+        c = np.eye(2) # output matrix propagates both system states to the output
+        d = np.zeros((2, 1)) # there is no direct feedthrough of control input to system output
+        model_continuous = signal.StateSpace(a, b, c, d)
+        model_discrete = model_continuous.to_discrete(self.timestep)
+
+        return model_discrete.A, model_discrete.B
 
 
 # ---------------------------------------------------------------------------*/
