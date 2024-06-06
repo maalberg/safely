@@ -28,6 +28,14 @@ class function(metaclass=interface):
 
     @property
     @abstractmethod
+    def parameters(self) -> np.ndarray:
+        """
+        Parameters of this function.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def dims_i_n(self) -> int:
         """
         Number of input dimensions.
@@ -88,22 +96,26 @@ class differentiable(function):
 
 class quadratic(differentiable):
     def __init__(self, parameters: np.ndarray) -> None:
-        self._params = np.atleast_2d(parameters)
+        self._parameters = np.atleast_2d(parameters)
 
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
-        sample = np.sum(domain.dot(self._params) * domain, axis=1, keepdims=True)
+        sample = np.sum(domain.dot(self._parameters) * domain, axis=1, keepdims=True)
         return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
     def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        return 2 * domain.dot(self._params)
+        return 2 * domain.dot(self._parameters)
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return self._parameters
 
     @property
     def dims_i_n(self) -> int:
-        return np.shape(self._params)[1]
+        return np.shape(self._parameters)[1]
 
     @property
     def dims_o_n(self) -> int:
-        return np.shape(self._params)[0]
+        return np.shape(self._parameters)[0]
 
 
 # ---------------------------------------------------------------------------*/
@@ -116,6 +128,10 @@ class linear(function):
     def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
         sample = domain.dot(self._parameters.T)
         return sample if samples_n == 1 else [sample for this in range(samples_n)]
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return self._parameters
 
     @property
     def dims_i_n(self) -> int:
@@ -143,6 +159,9 @@ class dynamics(stochastic):
 
         self._dims_i_n = model.dims_i_n
         self._dims_o_n = model.dims_o_n
+
+        # save parameters of given mean model to return as parameters of this class
+        self._parameters = model.parameters
 
         self.policy = policy
 
@@ -243,6 +262,10 @@ class dynamics(stochastic):
         self._observer(domain, value)
 
     @property
+    def parameters(self) -> np.ndarray:
+        return self._parameters
+
+    @property
     def dims_i_n(self) -> int:
         return self._dims_i_n
 
@@ -335,6 +358,10 @@ class pendulum_inv(function):
         if f > 0: angular_acceleration -= f / i * angular_velocity
 
         return np.column_stack((angular_velocity, angular_acceleration))
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return np.array([self.mass, self.length, self.friction])
 
     @property
     def dims_i_n(self) -> int:
@@ -447,6 +474,10 @@ class saturated(function):
         return np.clip(value, -self._clip, self._clip)
 
     @property
+    def parameters(self) -> np.ndarray:
+        self._func.parameters
+
+    @property
     def dims_i_n(self) -> int:
         return self._func.dims_i_n
 
@@ -468,6 +499,10 @@ class stochastic_stacked(function):
         sample = np.column_stack([func.evaluate_error(domain)[0] for func in self._funcs])
 
         return sample if samples_n == 1 else [sample for this in range(samples_n)]
+
+    @property
+    def parameters(self) -> np.ndarray:
+        return np.ndarray([func.parameters for func in self._funcs])
 
     @property
     def dims_i_n(self) -> int:
@@ -720,13 +755,13 @@ class triangulation(function):
         return np.sum(weights[:, :, np.newaxis] * parameters, axis=1).reshape(-1, 1)
 
     @property
+    def parameters(self) -> np.ndarray:
+        return self._parameters
+
+    @property
     def dims_i_n(self) -> int:
         return self._domain.dims_n
 
     @property
     def dims_o_n(self) -> int:
         return 1
-
-    @property
-    def parameters(self) -> np.ndarray:
-        return self._parameters
