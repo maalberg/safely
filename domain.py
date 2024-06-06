@@ -151,3 +151,15 @@ class gridworld:
         # to its linear format. By setting dims parameter back to n we locate
         # that upper-left rectangle corner in the original setting.
         return np.ravel_multi_index(np.atleast_2d(nd_indices), dims=self.dims_sz)
+
+    def sample_continuous(self, samples_n: int) -> np.ndarray:
+        """
+        Generate ``samples_n`` continuous samples from this domain. Here the notion
+        of continuous means that the samples are not bound to the grid of
+        the domain, but are freely allocated throughout the domain.
+        """
+        # generate random numbers to scale the ranges of domain dimensions
+        scaling = np.random.uniform(0, 1, size=(samples_n, self.dims_n))
+        # scale the ranges and add the result to the starting point of these ranges
+        return scaling * np.diff(self.dims_lim, axis=1).T + self.offset
+ 
