@@ -155,7 +155,14 @@ class stochastic(function, uncertainty):
 class dynamics(stochastic):
     def __init__(
             self,
-            model: function, policy: function = None, error: gpy.kern.Kern = None) -> None:
+            model: function, error: gpy.kern.Kern = None,
+            policy: function = None) -> None:
+        """
+        Construct this class given ``model``, ``error`` and ``policy``.
+        If ``error`` is none, then these dynamics are constructed as deterministic,
+        and there is no way to change this later. In contrast, ``policy`` can be set at a
+        later stage (if necessary), which allows swapping policies to conduct various experiments.
+        """
 
         self._dims_i_n = model.dims_i_n
         self._dims_o_n = model.dims_o_n
@@ -163,6 +170,7 @@ class dynamics(stochastic):
         # save parameters of given mean model to return as parameters of this class
         self._parameters = model.parameters
 
+        # make policy a publicly available property of this class
         self.policy = policy
 
         # if error is present, construct stochastic dynamics,
