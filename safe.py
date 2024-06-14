@@ -1,183 +1,168 @@
 import numpy as np
+import tensorflow as tf
+
 import function as fun
 import domain as dom
 
 class lyapunov:
     def __init__(
             self,
-            candidate: fun.differentiable, domain: dom.gridworld,
-            roa_init: list[bool] = None) -> None:
+            candidate: fun.differentiable, dynamics: fun.uncertainty,
+            domain: dom.gridworld, domain_safe: list[bool] | None = None) -> None:
 
-        self.candidate = candidate
+        # candidate, dynamics and domain are fixed and cannot be changed later
+        self._candidate = candidate
+        self._dynamics = dynamics
+        self._domain = domain
 
-        self._impl_domain = domain
-        self._impl_roa_init = roa_init
+        self._init_roa(domain_safe)
 
-        self._impl_reset_roa(domain, roa_init)
+    @property
+    def candidate(self) -> fun.differentiable: return self._candidate
 
-    def differentiate_along(self, tragectory: np.ndarray, squared: bool = False) -> np.ndarray:
+    @property
+    def dynamics(self) -> fun.uncertainty: return self._dynamics
+
+    @property
+    def domain(self) -> dom.gridworld: return self._domain
+
+    @property
+    def domain_safe(self) -> list[bool]: return self._roa
+
+    @property
+    def domain_safe_bdry(self) -> float | None: return self._roa_bdry
+
+    def evaluate_error(self) -> tuple[tf.Tensor, tf.Tensor]:
         """
-        Calculate the derivative of this Lyapunov function along dynamical system ``tragectory``
-        and return the resulting derivative. The ``tragectory`` can also represent
-        variance of an uncertain system. In this case, ``squared`` must be set to True.
-        """
-        lyap_derivative = self.candidate.differentiate(self._impl_domain.states)
-        if squared: lyap_derivative = lyap_derivative**2
-        return np.sum(lyap_derivative * tragectory, axis=1)
-
-    def sample(self, dynamics: fun.function, samples_n: int = 1) -> np.ndarray:
-        samples = dynamics(self._impl_domain.states, samples_n=samples_n)
-
-        return self.differentiate_along(samples) if samples_n == 1 else [self.differentiate_along(sample) for sample in samples]
-
-    def measure_safety(
-            self,
-            dynamics: fun.uncertainty,
-            ci: float = 1.96) -> tuple[np.ndarray, np.ndarray]:
-        """
-        This method calculates the boundaries of the derivative of a Lyapunov function candidate
-        along the trajectories of ``dynamics``. The result returned is then the mean and
-        confidence interval (CI) of Lyapunov-based stability. Optional ``control``
-        appends the evaluation of ``dynamics`` with actions; of course the
-        ``dynamics`` must be ready to accept these actions. The
-        optional parameter ``ci`` can be used to adjust the
-        confidence interval; its default value of 1.96
-        sorresponds to 95% interval for normal data.
+        Evaluate error in dynamical stability and return the mean and variance of this error.
+        The error is evaluated in terms of lyapunov derivative along dynamics.
         """
 
-        # prepare states and actions
-        states = self._impl_domain.states
-        #actions = control(states) if control is not None else None
+        # evaluate error of dynamics
+        dyn_mean, dyn_var = self.dynamics.evaluate_error(self.domain.states)
 
-        # evaluate dynamics
-        mean, var = dynamics.evaluate_error(states)
+        # lyapunov derivative can indicate whether dynamics decreases toward an equillibrium point
+        lyap = self.candidate.differentiate(self.domain.states)
 
-        # calculate Lyapunov derivative along the mean and variance of dynamics
-        lyap_d = self.candidate.differentiate(states)
-        lyap_dmean = np.sum(lyap_d * mean, axis=1)
-        lyap_dvar = np.sum(lyap_d**2 * var, axis=1)
+        # so calculate stability error as a lyapunov derivative along dynamics
+        err_mean = tf.reduce_sum(lyap * dyn_mean, axis=1, keepdims=True)
+        err_var = tf.reduce_sum(lyap**2 * dyn_var, axis=1, keepdims=True)
 
-        # as the returned upper bound calculate an upper confidence interval (ci)
-        lyap_dci = ci * np.sqrt(lyap_dvar)
-        return lyap_dmean, lyap_dci
+        return err_mean, err_var
 
-    def update_roa(
-            self,
-            dynamics: fun.dynamics,
-            safety_thr: float | list[float] = 0, needs_reset: bool = False) -> None:
+    def find_learnable(self) -> tf.Tensor:
         """
-        Update the current region of attraction (ROA) based on ``dynamics`` and a ``safety_thr``.
-        There is a possibility to reset the ROA with a ``needs_reset`` flag.
+        Find a learnable state inside that is considered safe, but has the most uncertainty.
         """
 
-        if needs_reset is True:
-            self._impl_reset_roa(self._impl_domain, self._impl_roa_init)
+        # evaluate error from uncertain dynamics
+        error = self.dynamics.evaluate_error(self.domain.states)[1]
 
-        # -------------------------------------------------------------------*/
-        # based on a Lyapunov derivative, find a safe set inside the domain
+        # get state locations that are considered safe
+        #
+        # Region of attraction is a one-dimensional array of bool values, so method tf.where
+        # will return a two-dimensional array of indices with size (n, 1),
+        # where n is the number of true elements. The last dimension
+        # is then squeezed, or removed, because the bool's are
+        # meant to show state locations, regardless of the
+        # state dimensionality. And states are allocated
+        # along the first dimension, i.e. axis = 0.
+        state_locs = tf.squeeze(tf.where(self.domain_safe), axis=-1)
 
-        # measure safety boundry
-        safety_mean, safety_ci = self.measure_safety(dynamics)
-        safety_bdry = safety_mean + safety_ci
+        # gather all state errors that are considered safe
+        #
+        # Based on a one-dimensional state locations, tf.gather will return slices
+        # from states and errors with the same state dimensionality.
+        error_safe = tf.gather(error, indices=state_locs, axis=0)
+        state_safe = tf.gather(self.domain.states, indices=state_locs, axis=0)
 
-        # a safe set is where the Lyapunov derivative is less than a threshold or
-        # the safety is explicitly specified by the user
-        safe = safety_bdry < safety_thr
-        safe = np.logical_or(safe, self._impl_roa)
+        # gather the currently learnable state
+        #
+        # Method tf.argmax is expected to return a location as a list, not
+        # as a single scalar. In this case, tf.gather will gather
+        # the corresponding state with proper dimensions.
+        return tf.gather(state_safe, indices=tf.argmax(error_safe), axis=0)
 
-        # -----------------------------------------------------------------*/
-        # find the maximum boundary c of a region of attraction curlyV,
-        # so that whenever a state trajectory lands inside the
-        # region of attraction, the trajectory stays in this
-        # region and eventually converges to origin
+    def update_safety(self, threshold: float | list[float] = 0.) -> None:
 
-        # introduce an interval (0, Vmax] of Lyapunov values V(x),
-        # where we want to find the maximum boundary c,
-        # such that V(x) <= c for c > 0
-        lyap = self.candidate(self._impl_domain.states).squeeze()
-        lyap_max = np.max(lyap)
-        search_accuracy = lyap_max / 1e10
-        search_interval = [0, lyap_max + search_accuracy]
+        # evaluate dynamics error and derive the upper bound of its confidence interval
+        err_mean, err_var = self.evaluate_error()
+        err_ci = 2.0 * tf.sqrt(err_var)
+        err_ci_u = err_mean + err_ci
 
-        # constraint which defines the region of attraction, i.e. all points inside
-        # a Lyapunov surface V(x) <= c have a negative-definite derivative
-        roa_cstr = lambda c : np.all(safe[lyap <= c])
-        search_interval = self._impl_search_roa_boundary(search_interval, roa_cstr, search_accuracy)
+        # domain is considered safe, when the upper bound of dynamics error is less
+        # than a specific, user-defined, safety threshold;
+        # the domain is then augmented with safety
+        # information derived earlier
+        safe = tf.logical_or(tf.squeeze(err_ci_u < threshold, axis=-1), self.domain_safe)
 
-        # -----------------------------------------------------------------*/
-        # update the current region of attraction
+        # determine initial region of attraction, i.e. a region in which a state
+        # becomes attracted to an equillibrium point; the region is
+        # defined in terms of a lyapunov function value.
+        #
+        # roa is squeezed to remove the last dimension in order to comply with
+        # the rest of the code, so e.g. if roa is of size (1000, 1),
+        # then the squeezed version is of size (1000).
+        lyap = tf.squeeze(self.candidate(self.domain.states), axis=-1)
+        lyap_max = tf.reduce_max(lyap)
+        lyap_acc = lyap_max / 1e10
 
-        if search_interval is not None:
-            self._impl_roa[:] = lyap <= search_interval[0]
+        # update initial region of attraction by searching the true boundary of roa,
+        # inside which the roa is totally safe, i.e. all states inside the
+        # region have the attraction property and are, thus, safe
+        safe_cstr = lambda lyap_bdry : tf.reduce_all(safe[lyap <= lyap_bdry])
+        lyap_search = [0, lyap_max + lyap_acc]
+        lyap_bdry = self._find_lyap_boundary(lyap_search, lyap_acc, safe_cstr)
 
-    def _impl_reset_roa(self, domain: dom.gridworld, roa_init: list[bool] = None) -> None:
-        self._impl_roa = np.zeros(np.prod(domain.dims_sz), dtype=bool)
-        if roa_init is not None: self._impl_roa[roa_init] = True
+        # in case boundary is found, update current region of attraction
+        if lyap_bdry is not None:
+            self._roa = lyap <= lyap_bdry
 
-    def _impl_search_roa_boundary(self, search_interval, search_constraint, search_accuracy):
+            # determine the boundary of a region of attraction
+            safe_locs = tf.squeeze(tf.where(self.domain_safe), axis=-1)
+            state_safe = tf.gather(self.domain.states, indices=safe_locs, axis=0)
+            lyap_safe = tf.gather(self.candidate(self.domain.states), indices=safe_locs, axis=0)
+            self._roa_bdry = tf.gather(state_safe, indices=tf.argmax(lyap_safe), axis=0)
+
+    def sample(self) -> tf.Tensor:
+        dyn_samples = self.dynamics(self.domain.states)
+        lyap_der_samples = self.candidate.differentiate(self.domain.states)
+
+        return tf.reduce_sum(lyap_der_samples * dyn_samples, axis=1, keepdims=True)
+
+    def _find_lyap_boundary(self, lyap: list[float, float], lyap_acc: float, safe_cstr) -> float | None:
         """
-        Search the boundary of a region of attraction on `search_interval` by applying
-        `search_constraint` to the points of `search_interval`
-        until `search_accuracy` is reached
-
-        The method uses a binary search algrithm to find the level.
+        Find the upper boundary of a region of attraction inside an interval specified by ``lyap``.
+        During the search the points inside ``lyap`` are safety constrained
+        using callable ``safe_cstr``. The search continues
+        until accuracy ``lyap_acc`` is reached.
+        If the whole region is unsafe,
+        the method returns None.
         """
-        if not search_constraint(search_interval[0]):
+        if not safe_cstr(lyap[0]):
+            # the starting point immediately does not satisfy safety,
+            # so return nothing
             return None
 
-        if search_constraint(search_interval[1]):
-            search_interval[0] = search_interval[1]
-            return search_interval
+        if safe_cstr(lyap[1]):
+            # the end point satisfies safety, so entire region is safe,
+            # and thus the end can be returned as boundary
+            return lyap[1]
 
-        while search_interval[1] - search_interval[0] > search_accuracy:
-            mean = (search_interval[0] + search_interval[1]) / 2
+        # apply binary search algorithm to find boundary until accuracy is reached
+        while lyap[1] - lyap[0] > lyap_acc:
+            mean = (lyap[0] + lyap[1]) / 2
+            if safe_cstr(mean): lyap[0] = mean
+            else: lyap[1] = mean
 
-            if search_constraint(mean):
-                search_interval[0] = mean
-            else:
-                search_interval[1] = mean
+        # return the upper bound of located interval
+        return lyap[1]
 
-        return search_interval
-
-    def find_uncertainty(self, uncertainty: fun.uncertainty) -> np.ndarray:
-        """
-        Find a state with maximum uncertainty which is still safe to sample given the ``dynamics``
-        """
-
-        # determine a location (index) in a safe set, where the given uncertain function
-        # exhibits maximum uncertainty
-        _, error = uncertainty.evaluate_error(self._impl_domain.states)
-        this_error_max = np.argmax(error[self._impl_roa, 0]) # fix me <- active dimension
-
-        # based on location, extract the corresponding state
-        state_uncertain = self._impl_domain.states[ # in all domain
-            self._impl_roa][                # narrow down to a safe set
-                [this_error_max], :].copy()     # and extract a row vector denoting a (multidimensional) state
-
-        return state_uncertain
-
-    def decrease_uncertainty(self, dynamics: fun.dynamics) -> None:
-        """
-        Decrease uncertainty of ``dynamics`` by letting it sample a safe state which has maximum uncertainty
-        """
-        state_uncertain = self.find_uncertainty(dynamics)
-        dynamics.observe_datapoints(state_uncertain, dynamics(state_uncertain))
-
-    @property
-    def roa_boundary(self) -> float:
-        domain = self.domain
-        roa = self.roa
-        value = self.candidate(domain)
-        return domain[roa][np.argmax(value[roa])]
-
-    @property
-    def roa(self) -> list[bool]:
-        return self._impl_roa
-
-    @property
-    def domain(self) -> np.ndarray:
-        return self._impl_domain.states
-
-    @property
-    def domain_dims_lim(self) -> np.ndarray:
-        return self._impl_domain.dims_lim
+    def _init_roa(self, domain_safe: list[bool]) -> None:
+        self._roa = domain_safe
+        self._roa_initial = domain_safe
+        self._roa_bdry = None
+        if domain_safe is not None:
+            self.update_safety()
+        else:
+            self._roa = tf.zeros(len(self.domain), dtype=tf.bool)

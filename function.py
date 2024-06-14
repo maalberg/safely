@@ -1,13 +1,14 @@
 from abc import abstractmethod
 from abc import ABCMeta as interface
 
-import numpy as np
 from scipy import signal
 from scipy.spatial import Delaunay as delaunay
-from scipy.sparse import coo_matrix as sparse_coordinates
 
 from itertools import product as cartesian
-import GPy as gpy
+
+import numpy as np
+import tensorflow as tf
+import gpflow
 
 import domain as dom
 import utilities as utils
@@ -18,17 +19,17 @@ import utilities as utils
 
 class function(metaclass=interface):
     @abstractmethod
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
         """
         Take ``samples_n`` number of function samples with ``domain`` as input and
-        return these samples in a tuple. If ``samples_n`` equals 1, then
-        the tuple is dropped and the sample itself is returned.
+        return these samples in a list. If ``samples_n`` equals 1, then
+        the list is dropped and the sample itself is returned.
         """
         raise NotImplementedError
 
     @property
     @abstractmethod
-    def parameters(self) -> np.ndarray:
+    def parameters(self) -> tf.Tensor:
         """
         Parameters of this function.
         """
@@ -50,13 +51,16 @@ class function(metaclass=interface):
         """
         raise NotImplementedError
 
+    def _validate_type(self, domain: tf.Tensor) -> tf.Tensor:
+        return tf.convert_to_tensor(domain, dtype=gpflow.default_float()) if isinstance(domain, np.ndarray) else domain
+
 
 # ---------------------------------------------------------------------------*/
 # - uncertainty
 
 class uncertainty(metaclass=interface):
     @abstractmethod
-    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """
         Evaluate the error of this uncertainty in given ``domain`` and return a predicted
         mean value together with a corresponding variance.
@@ -64,7 +68,7 @@ class uncertainty(metaclass=interface):
         raise NotImplementedError
 
     @abstractmethod
-    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+    def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
         """
         Let this uncertainty observe datapoints in ``domain`` with given ``value``.
         """
@@ -72,7 +76,7 @@ class uncertainty(metaclass=interface):
 
     @property
     @abstractmethod
-    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
+    def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
         """
         Datapoints observed by this uncertainty, see method ``observe_datapoints``.
         """
@@ -84,7 +88,7 @@ class uncertainty(metaclass=interface):
 
 class differentiable(function):
     @abstractmethod
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
+    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
         """
         Differentiate this function on given ``domain`` and return resulting values.
         """
@@ -95,51 +99,55 @@ class differentiable(function):
 # - quadratic function
 
 class quadratic(differentiable):
-    def __init__(self, parameters: np.ndarray) -> None:
-        self._parameters = np.atleast_2d(parameters)
+    def __init__(self, parameters: tf.Tensor) -> None:
+        self._parameters = tf.experimental.numpy.atleast_2d(parameters)
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
-        sample = np.sum(domain.dot(self._parameters) * domain, axis=1, keepdims=True)
-        return sample if samples_n == 1 else [sample for this in range(samples_n)]
+    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+        domain = self._validate_type(domain)
+        return tf.reduce_sum(tf.matmul(domain, self._parameters) * domain, axis=1, keepdims=True)
 
-    def differentiate(self, domain: np.ndarray) -> np.ndarray:
-        return 2 * domain.dot(self._parameters)
+    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
+        domain = self._validate_type(domain)
+        return tf.matmul(domain, self._parameters + tf.transpose(self._parameters))
 
     @property
-    def parameters(self) -> np.ndarray:
+    def parameters(self) -> tf.Tensor:
         return self._parameters
 
     @property
     def dims_i_n(self) -> int:
-        return np.shape(self._parameters)[1]
+        return self._parameters.shape[1]
 
     @property
     def dims_o_n(self) -> int:
-        return np.shape(self._parameters)[0]
+        return self._parameters.shape[0]
 
 
 # ---------------------------------------------------------------------------*/
 # - linear function
 
 class linear(function):
-    def __init__(self, parameters: list[np.ndarray]) -> None:
-        self._parameters = np.column_stack(tuple(map(np.atleast_2d, parameters)))
+    def __init__(self, parameters: list[tf.Tensor]) -> None:
+        self._parameters = tf.concat(tuple(map(tf.experimental.numpy.atleast_2d, parameters)), axis=1)
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
-        sample = domain.dot(self._parameters.T)
+    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+        domain = self._validate_type(domain)
+
+        sample = tf.matmul(domain, self._parameters, transpose_b=True)
+
         return sample if samples_n == 1 else [sample for this in range(samples_n)]
 
     @property
-    def parameters(self) -> np.ndarray:
+    def parameters(self) -> tf.Tensor:
         return self._parameters
 
     @property
     def dims_i_n(self) -> int:
-        return np.shape(self._parameters)[1]
+        return self._parameters.shape[1]
 
     @property
     def dims_o_n(self) -> int:
-        return np.shape(self._parameters)[0]
+        return self._parameters.shape[0]
 
 
 # ---------------------------------------------------------------------------*/
@@ -153,10 +161,86 @@ class stochastic(function, uncertainty):
 # - dynamics
 
 class dynamics(stochastic):
+    class gpr:
+        def __init__(
+                self,
+                mean_fn: function, cov_fn: gpflow.kernels.Kernel) -> None:
+
+            # create a gaussian process with
+            # initial observed data at the origin with x=0, y=0.
+            train_i = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
+            train_o = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
+            self.gp = gpflow.models.GPR((train_i, train_o), cov_fn, mean_fn)
+
+            self._update_cache()
+
+        def _update_cache(self) -> None:
+
+            # calculate covariances between training inputs corrupted by observation noise,
+            # i.e. K(X, X) + sigma^2 * I, see (2.21) from Rasmussen & Williams, 2006
+            train_i = self.train_i
+            cov = self.gp.kernel.K(train_i) + tf.eye(train_i.shape[0], dtype=gpflow.default_float()) * tf.constant(1e-6, dtype=gpflow.default_float())
+
+            # training outputs y, or targets
+            train_o = self.train_o - self.gp.mean_function(train_i)
+
+            # use cholesky factorization to perform the covariance matrix inversion,
+            # see (2.25) from Rasmussen & Williams, 2006
+            self.cholesky = tf.linalg.cholesky(cov)
+
+            # ... and compute the product between the cholesky and the outputs, i.e.
+            # alpha = (K + sigma^2 * I)^-1 * y, see (2.25) from Rasmussen & Williams, 2006
+            self.alpha = tf.linalg.triangular_solve(self.cholesky, train_o, lower=True)
+
+        def predict(self, test_i: tf.Tensor, full_cov: bool = False) -> tuple[tf.Tensor, tf.Tensor]:
+            """
+            Predict mean and variance on a test input ``test_i``. If ``full_cov`` flag
+            is set to True, this method returns predicts the full covariance.
+            Note that this method expands the dimensions of outputs,
+            e.g. for ``test_i`` of size (1000, 1), the mean
+            will have size (1000, 1), the variance will
+            have size (1000, 1), whereas the
+            covariance will have size
+            (1000, 1000, 1).
+            """
+            mean = self.gp.mean_function(test_i)
+            cov = self.gp.kernel.K(self.train_i, test_i)
+
+            a = tf.linalg.triangular_solve(self.cholesky, cov, lower=True)
+            mean = tf.matmul(a, self.alpha, transpose_a=True) + mean
+
+            if full_cov:
+                cov = self.gp.kernel.K(test_i)
+                var = cov - tf.matmul(a, a, transpose_a=True)
+                shape = tf.stack([1, 1, tf.shape(self.train_o)[1]])
+                var = tf.tile(tf.expand_dims(var, 2), shape)
+            else:
+                cov = self.gp.kernel.K_diag(test_i)
+                var = cov - tf.reduce_sum(tf.square(a), axis=0)
+                var = tf.tile(tf.reshape(var, (-1, 1)), [1, tf.shape(self.train_o)[1]])
+
+            return mean, var
+
+        def update_data(self, train_i: tf.Tensor, train_o: tf.Tensor) -> None:
+            # combine existing and new training data together
+            train_i = tf.concat([self.train_i, train_i], axis=0)
+            train_o = tf.concat([self.train_o, train_o], axis=0)
+
+            self.gp.data = train_i, train_o
+            self._update_cache()
+
+        @property
+        def train_i(self) -> tf.Tensor:
+            return self.gp.data[0]
+
+        @property
+        def train_o(self) -> tf.Tensor:
+            return self.gp.data[1]
+
     def __init__(
             self,
-            model: function, error: gpy.kern.Kern = None,
-            policy: function = None) -> None:
+            model: function, error: gpflow.kernels.Kernel | None = None,
+            policy: function | None = None) -> None:
         """
         Construct this class given ``model``, ``error`` and ``policy``.
         If ``error`` is none, then these dynamics are constructed as deterministic,
@@ -176,47 +260,41 @@ class dynamics(stochastic):
         # if error is present, construct stochastic dynamics,
         # otherwise the dynamics are deterministic
         if error is not None:
-            # use model as the mean function of a Gaussian process
-            gp_mean = gpy.core.Mapping(model.dims_i_n, model.dims_o_n)
-            gp_mean.f = model
-            gp_mean.update_gradients = lambda a, b: None
-
-            # a gaussian process with initial observed data at the origin with x=0, y=0
-            gp = gpy.core.GP(
-                np.zeros((1, model.dims_i_n)), np.zeros((1, model.dims_o_n)),
-                error,
-                gpy.likelihoods.Gaussian(variance=0), # no observaion noise at the moment
-                mean_function=gp_mean)
+            gp = dynamics.gpr(model, error)
 
             # define a sampling method for stochastic dynamics
-            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray] | np.ndarray:
-                samples = gp.posterior_samples(domain, size=samples_n)
+            def sample(domain: tf.Tensor, samples_n: int) -> tuple[tf.Tensor] | tf.Tensor:
 
-                # format samples as a tuple of samples
-                samples = [samples[..., this_sample] for this_sample in range(samples.shape[-1])]
+                mean, cov = gp.predict(domain, full_cov=True)
 
-                # but drop the tuple if there is only one sample requested
+                samples = np.random.multivariate_normal(
+                    tf.squeeze(mean, axis=-1), tf.squeeze(cov, axis=-1), size=samples_n)
+
+                samples = tf.expand_dims(samples, axis=-1)
+
+                # format samples as a list of samples [the first dimension contains the number of samples]
+                samples = [samples[this_sample, ...] for this_sample in range(samples.shape[0])]
+
+                # but drop the list if there is only one sample requested
                 return samples[0] if samples_n == 1 else samples
 
             self._sampling = sample
 
             # define a method to evaluate the error of stochastic dynamics
-            def error_eval(domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            def error_eval(domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
                 return gp.predict(domain)
 
             self._error = error_eval
 
             # define a method to observe datapoints in order to reduce the uncertainty of stochastic dynamics
-            def observe(domain: np.ndarray, value: np.ndarray) -> None:
-                gp.set_XY(
-                    np.row_stack([gp.X, domain]),
-                    np.row_stack([gp.Y, value]))
+            def observe(domain: tf.Tensor, value: tf.Tensor) -> None:
+                gp.update_data(domain, value)
 
             self._observer = observe
 
             # define a method to return observed datapoints for stochastic dynamics
-            def observed() -> tuple[np.ndarray, np.ndarray]:
-                return gp.X, gp.Y
+            def observed() -> tuple[tf.Tensor, tf.Tensor]:
+                return gp.train_i, gp.train_o
 
             self._observations = observed
         else:
@@ -249,28 +327,33 @@ class dynamics(stochastic):
 
             self._observations = observed
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+        domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
-        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+        if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # sample function
         return self._sampling(domain, samples_n)
 
-    def evaluate_error(self, domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
-        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+        if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # evaluate function error
         return self._error(domain)
 
-    def observe_datapoints(self, domain: np.ndarray, value: np.ndarray) -> None:
+    def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
+        domain = self._validate_type(domain)
+        value = self._validate_type(value)
+
         # observe given datapoints
         self._observer(domain, value)
 
     @property
-    def parameters(self) -> np.ndarray:
+    def parameters(self) -> tf.Tensor:
         return self._parameters
 
     @property
@@ -282,7 +365,7 @@ class dynamics(stochastic):
         return self._dims_o_n
 
     @property
-    def datapoints_observed(self) -> tuple[np.ndarray, np.ndarray]:
+    def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
         # return observed datapoints, if any
         return self._observations()
 
