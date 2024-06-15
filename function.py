@@ -239,13 +239,11 @@ class dynamics(stochastic):
 
     def __init__(
             self,
-            model: function, error: gpflow.kernels.Kernel | None = None,
+            model: function, error: gpflow.kernels.Kernel,
             policy: function | None = None) -> None:
         """
-        Construct this class given ``model``, ``error`` and ``policy``.
-        If ``error`` is none, then these dynamics are constructed as deterministic,
-        and there is no way to change this later. In contrast, ``policy`` can be set at a
-        later stage (if necessary), which allows swapping policies to conduct various experiments.
+        Optional parameter ``policy`` can be set at a later stage,
+        which allows swapping policies to conduct various experiments.
         """
 
         self._dims_i_n = model.dims_i_n
@@ -257,75 +255,7 @@ class dynamics(stochastic):
         # make policy a publicly available property of this class
         self.policy = policy
 
-        # if error is present, construct stochastic dynamics,
-        # otherwise the dynamics are deterministic
-        if error is not None:
-            gp = dynamics.gpr(model, error)
-
-            # define a sampling method for stochastic dynamics
-            def sample(domain: tf.Tensor, samples_n: int) -> tuple[tf.Tensor] | tf.Tensor:
-
-                mean, cov = gp.predict(domain, full_cov=True)
-
-                samples = np.random.multivariate_normal(
-                    tf.squeeze(mean, axis=-1), tf.squeeze(cov, axis=-1), size=samples_n)
-
-                samples = tf.expand_dims(samples, axis=-1)
-
-                # format samples as a list of samples [the first dimension contains the number of samples]
-                samples = [samples[this_sample, ...] for this_sample in range(samples.shape[0])]
-
-                # but drop the list if there is only one sample requested
-                return samples[0] if samples_n == 1 else samples
-
-            self._sampling = sample
-
-            # define a method to evaluate the error of stochastic dynamics
-            def error_eval(domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-                return gp.predict(domain)
-
-            self._error = error_eval
-
-            # define a method to observe datapoints in order to reduce the uncertainty of stochastic dynamics
-            def observe(domain: tf.Tensor, value: tf.Tensor) -> None:
-                gp.update_data(domain, value)
-
-            self._observer = observe
-
-            # define a method to return observed datapoints for stochastic dynamics
-            def observed() -> tuple[tf.Tensor, tf.Tensor]:
-                return gp.train_i, gp.train_o
-
-            self._observations = observed
-        else:
-            # define a sampling method for deterministic dynamics
-            def sample(domain: np.ndarray, samples_n: int) -> tuple[np.ndarray]:
-                sample = model(domain)
-
-                return sample if samples_n == 1 else [sample for this in range(samples_n)]
-
-            self._sampling = sample
-
-            # define a method to evaluate the error of deterministic dynamics (there is no error)
-            def error_eval(domain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-                mean = model(domain)
-                var = np.zeros_like(mean)
-
-                return mean, var
-
-            self._error = error_eval
-
-            # define a method to observe datapoints for deterministic dynamics (this has no meaning)
-            def observe(domain: np.ndarray, value: np.ndarray) -> None:
-                pass
-
-            self._observer = observe
-
-            # define a method to return observed datapoints in case of deterministic dynamics (there will be none)
-            def observed() -> tuple[np.ndarray, np.ndarray]:
-                return None
-
-            self._observations = observed
+        self.gp = dynamics.gpr(model, error)
 
     def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
         domain = self._validate_type(domain)
@@ -334,7 +264,21 @@ class dynamics(stochastic):
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # sample function
-        return self._sampling(domain, samples_n)
+        return self._sample_gp(domain, samples_n)
+    
+    def _sample_gp(self, domain: tf.Tensor, samples_n: int) -> tuple[tf.Tensor] | tf.Tensor:
+        mean, cov = self.gp.predict(domain, full_cov=True)
+
+        samples = np.random.multivariate_normal(
+            tf.squeeze(mean, axis=-1), tf.squeeze(cov, axis=-1), size=samples_n)
+
+        samples = tf.expand_dims(samples, axis=-1)
+
+        # format samples as a list of samples [the first dimension contains the number of samples]
+        samples = [samples[this_sample, ...] for this_sample in range(samples.shape[0])]
+
+        # but drop the list if there is only one sample requested
+        return samples[0] if samples_n == 1 else samples
 
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         domain = self._validate_type(domain)
@@ -343,31 +287,27 @@ class dynamics(stochastic):
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # evaluate function error
-        return self._error(domain)
+        return self.gp.predict(domain)
 
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
         domain = self._validate_type(domain)
         value = self._validate_type(value)
 
         # observe given datapoints
-        self._observer(domain, value)
-
-    @property
-    def parameters(self) -> tf.Tensor:
-        return self._parameters
-
-    @property
-    def dims_i_n(self) -> int:
-        return self._dims_i_n
-
-    @property
-    def dims_o_n(self) -> int:
-        return self._dims_o_n
+        self.gp.update_data(domain, value)
 
     @property
     def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
-        # return observed datapoints, if any
-        return self._observations()
+        return self.gp.train_i, self.gp.train_o
+
+    @property
+    def parameters(self) -> tf.Tensor: return self._parameters
+
+    @property
+    def dims_i_n(self) -> int: return self._dims_i_n
+
+    @property
+    def dims_o_n(self) -> int: return self._dims_o_n
 
 
 # ---------------------------------------------------------------------------*/
