@@ -20,11 +20,9 @@ import utilities as utils
 
 class function(metaclass=interface):
     @abstractmethod
-    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         """
-        Take ``samples_n`` number of function samples with ``domain`` as input and
-        return these samples in a list. If ``samples_n`` equals 1, then
-        the list is dropped and the sample itself is returned.
+        Sample this function on given ``domain``.
         """
         raise NotImplementedError
 
@@ -37,20 +35,10 @@ class function(metaclass=interface):
         raise NotImplementedError
 
     @property
-    @abstractmethod
-    def dims_i_n(self) -> int:
-        """
-        Number of input dimensions.
-        """
-        raise NotImplementedError
+    def dims_i_n(self) -> int: return self.parameters.shape[1]
 
     @property
-    @abstractmethod
-    def dims_o_n(self) -> int:
-        """
-        Number of output dimensions.
-        """
-        raise NotImplementedError
+    def dims_o_n(self) -> int: return self.parameters.shape[0]
 
     def _validate_type(self, domain: tf.Tensor) -> tf.Tensor:
         return tf.convert_to_tensor(domain, dtype=gpflow.default_float()) if isinstance(domain, np.ndarray) else domain
@@ -91,7 +79,7 @@ class differentiable(function):
     @abstractmethod
     def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
         """
-        Differentiate this function on given ``domain`` and return resulting values.
+        Differentiate this function on given ``domain``.
         """
         raise NotImplementedError
 
@@ -103,7 +91,7 @@ class quadratic(differentiable):
     def __init__(self, parameters: tf.Tensor) -> None:
         self._parameters = tf.experimental.numpy.atleast_2d(parameters)
 
-    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         domain = self._validate_type(domain)
         return tf.reduce_sum(tf.matmul(domain, self._parameters) * domain, axis=1, keepdims=True)
 
@@ -112,16 +100,7 @@ class quadratic(differentiable):
         return tf.matmul(domain, self._parameters + tf.transpose(self._parameters))
 
     @property
-    def parameters(self) -> tf.Tensor:
-        return self._parameters
-
-    @property
-    def dims_i_n(self) -> int:
-        return self._parameters.shape[1]
-
-    @property
-    def dims_o_n(self) -> int:
-        return self._parameters.shape[0]
+    def parameters(self) -> tf.Tensor: return self._parameters
 
 
 # ---------------------------------------------------------------------------*/
@@ -131,24 +110,12 @@ class linear(function):
     def __init__(self, parameters: list[tf.Tensor]) -> None:
         self._parameters = tf.concat(tuple(map(tf.experimental.numpy.atleast_2d, parameters)), axis=1)
 
-    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         domain = self._validate_type(domain)
-
-        sample = tf.matmul(domain, self._parameters, transpose_b=True)
-
-        return sample if samples_n == 1 else [sample for this in range(samples_n)]
+        return tf.matmul(domain, self._parameters, transpose_b=True)
 
     @property
-    def parameters(self) -> tf.Tensor:
-        return self._parameters
-
-    @property
-    def dims_i_n(self) -> int:
-        return self._parameters.shape[1]
-
-    @property
-    def dims_o_n(self) -> int:
-        return self._parameters.shape[0]
+    def parameters(self) -> tf.Tensor: return self._parameters
 
 
 # ---------------------------------------------------------------------------*/
@@ -269,9 +236,6 @@ class dynamics(stochastic):
         the sampling. Finally, ``policy`` can be set at a later stage, which allows swapping policies.
         """
 
-        self._dims_i_n = model.dims_i_n
-        self._dims_o_n = model.dims_o_n
-
         # save parameters of given mean model to return as parameters of this class
         self._parameters = model.parameters
 
@@ -281,7 +245,7 @@ class dynamics(stochastic):
         # these stochastic dynamics are internally implemented in terms of a gaussian process
         self._gp = dynamics.gpr(domain_sampling, model, error)
 
-    def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
@@ -289,20 +253,6 @@ class dynamics(stochastic):
 
         # sample function
         return self._gp.sample(domain)
-
-    def _sample_gp(self, domain: tf.Tensor, samples_n: int) -> tuple[tf.Tensor] | tf.Tensor:
-        mean, cov = self._gp.predict(domain, full_cov=True)
-
-        samples = np.random.multivariate_normal(
-            tf.squeeze(mean, axis=-1), tf.squeeze(cov, axis=-1), size=samples_n)
-
-        samples = tf.expand_dims(samples, axis=-1)
-
-        # format samples as a list of samples [the first dimension contains the number of samples]
-        samples = [samples[this_sample, ...] for this_sample in range(samples.shape[0])]
-
-        # but drop the list if there is only one sample requested
-        return samples[0] if samples_n == 1 else samples
 
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         domain = self._validate_type(domain)
@@ -327,12 +277,6 @@ class dynamics(stochastic):
     @property
     def parameters(self) -> tf.Tensor: return self._parameters
 
-    @property
-    def dims_i_n(self) -> int: return self._dims_i_n
-
-    @property
-    def dims_o_n(self) -> int: return self._dims_o_n
-
 
 # ---------------------------------------------------------------------------*/
 # - inverted pendulum
@@ -356,7 +300,7 @@ class pendulum_inv(function):
         # linearized model for control, and only after that the user can assign a proper policy
         self.policy = None
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+    def __call__(self, domain: np.ndarray) -> np.ndarray:
 
         # make sure there is at least one row,
         # i.e. state (possibly with action), in domain argument
@@ -366,10 +310,7 @@ class pendulum_inv(function):
         if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
 
         # call internal dynamics
-        value = self._solve_ode(domain)
-
-        # repeat values (samples) to respect the protocol of this function
-        return value if samples_n == 1 else [value for this in range(samples_n)]
+        return self._solve_ode(domain)
 
     def _solve_ode(self, domain: np.ndarray) -> np.ndarray:
         """
@@ -524,8 +465,8 @@ class saturated(function):
         self._func = func
         self._clip = clip
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
-        value = self._func(domain, samples_n)
+    def __call__(self, domain: np.ndarray) -> np.ndarray:
+        value = self._func(domain)
         return np.clip(value, -self._clip, self._clip)
 
     @property
@@ -548,12 +489,10 @@ class stochastic_stacked(function):
     def __init__(self, functions: list[stochastic]) -> None:
         self._funcs = functions
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+    def __call__(self, domain: np.ndarray) -> np.ndarray:
 
         # evaluate the means of all stochastic functions inside the list
-        sample = np.column_stack([func.evaluate_error(domain)[0] for func in self._funcs])
-
-        return sample if samples_n == 1 else [sample for this in range(samples_n)]
+        return np.column_stack([func.evaluate_error(domain)[0] for func in self._funcs])
 
     @property
     def parameters(self) -> np.ndarray:
@@ -795,7 +734,7 @@ class triangulation(function):
 
         return weights, simplices
 
-    def __call__(self, domain: np.ndarray, samples_n: int = 1) -> tuple[np.ndarray] | np.ndarray:
+    def __call__(self, domain: np.ndarray) -> np.ndarray:
 
         # TODO: document!
 
