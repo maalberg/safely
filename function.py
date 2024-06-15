@@ -2,6 +2,7 @@ from abc import abstractmethod
 from abc import ABCMeta as interface
 
 from scipy import signal
+from scipy import linalg
 from scipy.spatial import Delaunay as delaunay
 
 from itertools import product as cartesian
@@ -164,17 +165,19 @@ class dynamics(stochastic):
     class gpr:
         def __init__(
                 self,
+                sample_dom: tf.Tensor,
                 mean_fn: function, cov_fn: gpflow.kernels.Kernel) -> None:
 
             # create a gaussian process with
-            # initial observed data at the origin with x=0, y=0.
+            # initial observed zero-data at the origin, i.e. x=0, y=0.
             train_i = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
             train_o = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
             self.gp = gpflow.models.GPR((train_i, train_o), cov_fn, mean_fn)
 
-            self._update_cache()
+            self._update_prediction_cache()
+            self._initialize_sample(sample_dom)
 
-        def _update_cache(self) -> None:
+        def _update_prediction_cache(self) -> None:
 
             # calculate covariances between training inputs corrupted by observation noise,
             # i.e. K(X, X) + sigma^2 * I, see (2.21) from Rasmussen & Williams, 2006
@@ -186,13 +189,32 @@ class dynamics(stochastic):
 
             # use cholesky factorization to perform the covariance matrix inversion,
             # see (2.25) from Rasmussen & Williams, 2006
-            self.cholesky = tf.linalg.cholesky(cov)
+            self.cho_predict = tf.linalg.cholesky(cov)
 
             # ... and compute the product between the cholesky and the outputs, i.e.
             # alpha = (K + sigma^2 * I)^-1 * y, see (2.25) from Rasmussen & Williams, 2006
-            self.alpha = tf.linalg.triangular_solve(self.cholesky, train_o, lower=True)
+            self.alpha_predict = tf.linalg.triangular_solve(self.cho_predict, train_o, lower=True)
 
-        def predict(self, test_i: tf.Tensor, full_cov: bool = False) -> tuple[tf.Tensor, tf.Tensor]:
+        def _initialize_sample(self, domain: tf.Tensor) -> None:
+            mean, cov = self.predict(domain, full_cov=True)
+
+            mean = tf.squeeze(mean, axis=-1)
+            cov = tf.squeeze(cov, axis=-1)
+
+            samples = np.random.multivariate_normal(mean, cov, size=1)
+
+            cho = linalg.cho_factor(cov, lower=True)
+            self.alpha_sample = linalg.cho_solve(cho, samples[[0], :].T)
+
+            self.domain_sample = domain
+
+        def sample(self, test: tf.Tensor) -> tf.Tensor:
+            k = self.gp.kernel.K(test, self.domain_sample)
+            y = self.gp.mean_function(test) + tf.matmul(k, self.alpha_sample)
+
+            return y
+
+        def predict(self, test: tf.Tensor, full_cov: bool = False) -> tuple[tf.Tensor, tf.Tensor]:
             """
             Predict mean and variance on a test input ``test_i``. If ``full_cov`` flag
             is set to True, this method returns predicts the full covariance.
@@ -203,19 +225,19 @@ class dynamics(stochastic):
             covariance will have size
             (1000, 1000, 1).
             """
-            mean = self.gp.mean_function(test_i)
-            cov = self.gp.kernel.K(self.train_i, test_i)
+            mean = self.gp.mean_function(test)
+            cov = self.gp.kernel.K(self.train_i, test)
 
-            a = tf.linalg.triangular_solve(self.cholesky, cov, lower=True)
-            mean = tf.matmul(a, self.alpha, transpose_a=True) + mean
+            a = tf.linalg.triangular_solve(self.cho_predict, cov, lower=True)
+            mean = tf.matmul(a, self.alpha_predict, transpose_a=True) + mean
 
             if full_cov:
-                cov = self.gp.kernel.K(test_i)
+                cov = self.gp.kernel.K(test)
                 var = cov - tf.matmul(a, a, transpose_a=True)
                 shape = tf.stack([1, 1, tf.shape(self.train_o)[1]])
                 var = tf.tile(tf.expand_dims(var, 2), shape)
             else:
-                cov = self.gp.kernel.K_diag(test_i)
+                cov = self.gp.kernel.K_diag(test)
                 var = cov - tf.reduce_sum(tf.square(a), axis=0)
                 var = tf.tile(tf.reshape(var, (-1, 1)), [1, tf.shape(self.train_o)[1]])
 
@@ -227,23 +249,24 @@ class dynamics(stochastic):
             train_o = tf.concat([self.train_o, train_o], axis=0)
 
             self.gp.data = train_i, train_o
-            self._update_cache()
+            self._update_prediction_cache()
 
         @property
-        def train_i(self) -> tf.Tensor:
-            return self.gp.data[0]
+        def train_i(self) -> tf.Tensor: return self.gp.data[0]
 
         @property
-        def train_o(self) -> tf.Tensor:
-            return self.gp.data[1]
+        def train_o(self) -> tf.Tensor: return self.gp.data[1]
 
     def __init__(
             self,
-            model: function, error: gpflow.kernels.Kernel,
+            model: function, error: gpflow.kernels.Kernel, domain_sampling: tf.Tensor,
             policy: function | None = None) -> None:
         """
-        Optional parameter ``policy`` can be set at a later stage,
-        which allows swapping policies to conduct various experiments.
+        Stochastic dynamics are defined by ``model`` and ``error``, where
+        the former represents prior knowledge about dynamical behavior, whereas
+        the latter describes expected model uncertainty. In order to facilitate the
+        sampling of these dynamics, ``domain_sampling`` defines the discretization of
+        the sampling. Finally, ``policy`` can be set at a later stage, which allows swapping policies.
         """
 
         self._dims_i_n = model.dims_i_n
@@ -255,7 +278,8 @@ class dynamics(stochastic):
         # make policy a publicly available property of this class
         self.policy = policy
 
-        self.gp = dynamics.gpr(model, error)
+        # these stochastic dynamics are internally implemented in terms of a gaussian process
+        self._gp = dynamics.gpr(domain_sampling, model, error)
 
     def __call__(self, domain: tf.Tensor, samples_n: int = 1) -> list[tf.Tensor] | tf.Tensor:
         domain = self._validate_type(domain)
@@ -264,10 +288,10 @@ class dynamics(stochastic):
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # sample function
-        return self._sample_gp(domain, samples_n)
-    
+        return self._gp.sample(domain)
+
     def _sample_gp(self, domain: tf.Tensor, samples_n: int) -> tuple[tf.Tensor] | tf.Tensor:
-        mean, cov = self.gp.predict(domain, full_cov=True)
+        mean, cov = self._gp.predict(domain, full_cov=True)
 
         samples = np.random.multivariate_normal(
             tf.squeeze(mean, axis=-1), tf.squeeze(cov, axis=-1), size=samples_n)
@@ -287,18 +311,18 @@ class dynamics(stochastic):
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # evaluate function error
-        return self.gp.predict(domain)
+        return self._gp.predict(domain)
 
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
         domain = self._validate_type(domain)
         value = self._validate_type(value)
 
         # observe given datapoints
-        self.gp.update_data(domain, value)
+        self._gp.update_data(domain, value)
 
     @property
     def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
-        return self.gp.train_i, self.gp.train_o
+        return self._gp.train_i, self._gp.train_o
 
     @property
     def parameters(self) -> tf.Tensor: return self._parameters
