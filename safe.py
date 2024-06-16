@@ -7,7 +7,7 @@ import domain as dom
 class lyapunov:
     def __init__(
             self,
-            candidate: fun.differentiable, dynamics: fun.uncertainty,
+            candidate: fun.differentiable, dynamics: fun.stochastic,
             domain: dom.gridworld, domain_safe: list[bool] | None = None) -> None:
 
         # candidate, dynamics and domain are fixed and cannot be changed later
@@ -21,7 +21,7 @@ class lyapunov:
     def candidate(self) -> fun.differentiable: return self._candidate
 
     @property
-    def dynamics(self) -> fun.uncertainty: return self._dynamics
+    def dynamics(self) -> fun.stochastic: return self._dynamics
 
     @property
     def domain(self) -> dom.gridworld: return self._domain
@@ -125,7 +125,7 @@ class lyapunov:
             self._roa_bdry = tf.gather(state_safe, indices=tf.argmax(lyap_safe), axis=0)
 
     def sample(self) -> tf.Tensor:
-        dyn_samples = self.dynamics(self.domain.states)
+        dyn_samples = self.dynamics(self.domain.states)[0]
         lyap_der_samples = self.candidate.differentiate(self.domain.states)
 
         return tf.reduce_sum(lyap_der_samples * dyn_samples, axis=1, keepdims=True)

@@ -45,9 +45,55 @@ class function(metaclass=interface):
 
 
 # ---------------------------------------------------------------------------*/
-# - uncertainty
+# - differentiable function
 
-class uncertainty(metaclass=interface):
+class differentiable(function):
+    @abstractmethod
+    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
+        """
+        Differentiate this function on given ``domain``.
+        """
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------*/
+# - linear function
+
+class linear(function):
+    def __init__(self, parameters: list[tf.Tensor]) -> None:
+        self._parameters = tf.concat(tuple(map(tf.experimental.numpy.atleast_2d, parameters)), axis=1)
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        domain = self._validate_type(domain)
+        return tf.matmul(domain, self._parameters, transpose_b=True)
+
+    @property
+    def parameters(self) -> tf.Tensor: return self._parameters
+
+
+# ---------------------------------------------------------------------------*/
+# - quadratic function
+
+class quadratic(differentiable):
+    def __init__(self, parameters: tf.Tensor) -> None:
+        self._parameters = tf.experimental.numpy.atleast_2d(parameters)
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        domain = self._validate_type(domain)
+        return tf.reduce_sum(tf.matmul(domain, self._parameters) * domain, axis=1, keepdims=True)
+
+    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
+        domain = self._validate_type(domain)
+        return tf.matmul(domain, self._parameters + tf.transpose(self._parameters))
+
+    @property
+    def parameters(self) -> tf.Tensor: return self._parameters
+
+
+# ---------------------------------------------------------------------------*/
+# - stochastic function
+
+class stochastic(function):
     @abstractmethod
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """
@@ -73,160 +119,12 @@ class uncertainty(metaclass=interface):
 
 
 # ---------------------------------------------------------------------------*/
-# - differentiable function
-
-class differentiable(function):
-    @abstractmethod
-    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
-        """
-        Differentiate this function on given ``domain``.
-        """
-        raise NotImplementedError
-
-
-# ---------------------------------------------------------------------------*/
-# - quadratic function
-
-class quadratic(differentiable):
-    def __init__(self, parameters: tf.Tensor) -> None:
-        self._parameters = tf.experimental.numpy.atleast_2d(parameters)
-
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
-        return tf.reduce_sum(tf.matmul(domain, self._parameters) * domain, axis=1, keepdims=True)
-
-    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
-        return tf.matmul(domain, self._parameters + tf.transpose(self._parameters))
-
-    @property
-    def parameters(self) -> tf.Tensor: return self._parameters
-
-
-# ---------------------------------------------------------------------------*/
-# - linear function
-
-class linear(function):
-    def __init__(self, parameters: list[tf.Tensor]) -> None:
-        self._parameters = tf.concat(tuple(map(tf.experimental.numpy.atleast_2d, parameters)), axis=1)
-
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
-        return tf.matmul(domain, self._parameters, transpose_b=True)
-
-    @property
-    def parameters(self) -> tf.Tensor: return self._parameters
-
-
-# ---------------------------------------------------------------------------*/
-# - stochastic function
-
-class stochastic(function, uncertainty):
-    pass
-
-
-# ---------------------------------------------------------------------------*/
 # - dynamics
 
 class dynamics(stochastic):
-    class gpr:
-        def __init__(
-                self,
-                sample_dom: tf.Tensor,
-                mean_fn: function, cov_fn: gpflow.kernels.Kernel) -> None:
-
-            # create a gaussian process with
-            # initial observed zero-data at the origin, i.e. x=0, y=0.
-            train_i = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
-            train_o = tf.zeros((1, mean_fn.dims_i_n), dtype=gpflow.default_float())
-            self.gp = gpflow.models.GPR((train_i, train_o), cov_fn, mean_fn)
-
-            self._update_prediction_cache()
-            self._initialize_sample(sample_dom)
-
-        def _update_prediction_cache(self) -> None:
-
-            # calculate covariances between training inputs corrupted by observation noise,
-            # i.e. K(X, X) + sigma^2 * I, see (2.21) from Rasmussen & Williams, 2006
-            train_i = self.train_i
-            cov = self.gp.kernel.K(train_i) + tf.eye(train_i.shape[0], dtype=gpflow.default_float()) * tf.constant(1e-6, dtype=gpflow.default_float())
-
-            # training outputs y, or targets
-            train_o = self.train_o - self.gp.mean_function(train_i)
-
-            # use cholesky factorization to perform the covariance matrix inversion,
-            # see (2.25) from Rasmussen & Williams, 2006
-            self.cho_predict = tf.linalg.cholesky(cov)
-
-            # ... and compute the product between the cholesky and the outputs, i.e.
-            # alpha = (K + sigma^2 * I)^-1 * y, see (2.25) from Rasmussen & Williams, 2006
-            self.alpha_predict = tf.linalg.triangular_solve(self.cho_predict, train_o, lower=True)
-
-        def _initialize_sample(self, domain: tf.Tensor) -> None:
-            mean, cov = self.predict(domain, full_cov=True)
-
-            mean = tf.squeeze(mean, axis=-1)
-            cov = tf.squeeze(cov, axis=-1)
-
-            samples = np.random.multivariate_normal(mean, cov, size=1)
-
-            cho = linalg.cho_factor(cov, lower=True)
-            self.alpha_sample = linalg.cho_solve(cho, samples[[0], :].T)
-
-            self.domain_sample = domain
-
-        def sample(self, test: tf.Tensor) -> tf.Tensor:
-            k = self.gp.kernel.K(test, self.domain_sample)
-            y = self.gp.mean_function(test) + tf.matmul(k, self.alpha_sample)
-
-            return y
-
-        def predict(self, test: tf.Tensor, full_cov: bool = False) -> tuple[tf.Tensor, tf.Tensor]:
-            """
-            Predict mean and variance on a test input ``test_i``. If ``full_cov`` flag
-            is set to True, this method returns predicts the full covariance.
-            Note that this method expands the dimensions of outputs,
-            e.g. for ``test_i`` of size (1000, 1), the mean
-            will have size (1000, 1), the variance will
-            have size (1000, 1), whereas the
-            covariance will have size
-            (1000, 1000, 1).
-            """
-            mean = self.gp.mean_function(test)
-            cov = self.gp.kernel.K(self.train_i, test)
-
-            a = tf.linalg.triangular_solve(self.cho_predict, cov, lower=True)
-            mean = tf.matmul(a, self.alpha_predict, transpose_a=True) + mean
-
-            if full_cov:
-                cov = self.gp.kernel.K(test)
-                var = cov - tf.matmul(a, a, transpose_a=True)
-                shape = tf.stack([1, 1, tf.shape(self.train_o)[1]])
-                var = tf.tile(tf.expand_dims(var, 2), shape)
-            else:
-                cov = self.gp.kernel.K_diag(test)
-                var = cov - tf.reduce_sum(tf.square(a), axis=0)
-                var = tf.tile(tf.reshape(var, (-1, 1)), [1, tf.shape(self.train_o)[1]])
-
-            return mean, var
-
-        def update_data(self, train_i: tf.Tensor, train_o: tf.Tensor) -> None:
-            # combine existing and new training data together
-            train_i = tf.concat([self.train_i, train_i], axis=0)
-            train_o = tf.concat([self.train_o, train_o], axis=0)
-
-            self.gp.data = train_i, train_o
-            self._update_prediction_cache()
-
-        @property
-        def train_i(self) -> tf.Tensor: return self.gp.data[0]
-
-        @property
-        def train_o(self) -> tf.Tensor: return self.gp.data[1]
-
     def __init__(
             self,
-            model: function, error: gpflow.kernels.Kernel, domain_sampling: tf.Tensor,
+            model: function, error: gpflow.kernels.Kernel, noise: float,
             policy: function | None = None) -> None:
         """
         Stochastic dynamics are defined by ``model`` and ``error``, where
@@ -243,7 +141,14 @@ class dynamics(stochastic):
         self.policy = policy
 
         # these stochastic dynamics are internally implemented in terms of a gaussian process
-        self._gp = dynamics.gpr(domain_sampling, model, error)
+        self._gp = utils.gaussianprocess(model, error, model.dims_i_n, obsv_noise_var=noise)
+        self._gp_sampler = None
+
+    def initialize_sampler(
+            self,
+            discretization: tf.Tensor,
+            samples_n: int = 1, noise_var: float | None = None) -> None:
+        self._gp_sampler = self._gp.new_sampler(discretization, samples_n, noise_var)
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         domain = self._validate_type(domain)
@@ -252,7 +157,7 @@ class dynamics(stochastic):
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # sample function
-        return self._gp.sample(domain)
+        return self._gp_sampler(domain)
 
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         domain = self._validate_type(domain)
