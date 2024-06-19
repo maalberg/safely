@@ -160,10 +160,14 @@ class dynamics(stochastic):
         self._gp_sampler = self._gp.new_sampler(discretization, samples_n, noise_var)
 
     def __call__(self, domain: tf.Tensor, with_noise: bool = False) -> tf.Tensor:
+        """
+        Sample this function on given ``domain`` with the possibility to add observation
+        noise when ``with_noise`` parameter is true.
+        """
         domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
-        if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
+        if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
 
         # sample function
         return self._gp_sampler(domain, with_noise)
@@ -172,7 +176,7 @@ class dynamics(stochastic):
         domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
-        if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
+        if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
 
         # evaluate function error
         return self._gp.predict(domain)
@@ -214,19 +218,19 @@ class pendulum_inv(function):
         # linearized model for control, and only after that the user can assign a proper policy
         self.policy = None
 
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
 
         # make sure there is at least one row,
         # i.e. state (possibly with action), in domain argument
         domain = np.atleast_2d(domain)
 
         # augment domain with actuation signal if policy is available
-        if self.policy is not None: domain = np.column_stack([domain, self.policy(domain)])
+        if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
 
         # call internal dynamics
         return self._solve_ode(domain)
 
-    def _solve_ode(self, domain: np.ndarray) -> np.ndarray:
+    def _solve_ode(self, domain: tf.Tensor) -> tf.Tensor:
         """
         Solve the ordinary differential equation of this pendulum given ``domain`` as input.
         It is expected that ``domain`` contains the denormalized state of
@@ -381,7 +385,7 @@ class saturated(function):
 
     def __call__(self, domain: np.ndarray) -> np.ndarray:
         value = self._func(domain)
-        return np.clip(value, -self._clip, self._clip)
+        return tf.clip_by_value(value, -self._clip, self._clip)
 
     @property
     def parameters(self) -> np.ndarray:
@@ -403,14 +407,14 @@ class stochastic_stacked(function):
     def __init__(self, functions: list[stochastic]) -> None:
         self._funcs = functions
 
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
 
         # evaluate the means of all stochastic functions inside the list
-        return np.column_stack([func.evaluate_error(domain)[0] for func in self._funcs])
+        return tf.concat([func.evaluate_error(domain)[0] for func in self._funcs], axis=1)
 
     @property
-    def parameters(self) -> np.ndarray:
-        return np.ndarray([func.parameters for func in self._funcs])
+    def parameters(self) -> tf.Tensor:
+        return tf.constant([func.parameters for func in self._funcs])
 
     @property
     def dims_i_n(self) -> int:
@@ -418,7 +422,7 @@ class stochastic_stacked(function):
 
     @property
     def dims_o_n(self) -> int:
-        return np.sum([func.dims_o_n for func in self._funcs])
+        return tf.reduce_sum([func.dims_o_n for func in self._funcs])
 
 
 # ---------------------------------------------------------------------------*/
