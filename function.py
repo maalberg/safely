@@ -141,7 +141,11 @@ class dynamics(stochastic):
         self.policy = policy
 
         # these stochastic dynamics are internally implemented in terms of a gaussian process
-        self._gp = utils.gaussianprocess(model, error, model.dims_i_n, obsv_noise_var=noise)
+        self._gp = utils.gaussianprocess(
+            model, error,
+            dims_n=(model.dims_i_n, model.dims_o_n),
+            obsv_noise_var=noise)
+
         self._gp_sampler = None
 
     def initialize_sampler(
