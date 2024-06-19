@@ -147,17 +147,22 @@ class dynamics(stochastic):
     def initialize_sampler(
             self,
             discretization: tf.Tensor,
-            samples_n: int = 1, noise_var: float | None = None) -> None:
+            samples_n: int = 1, noise_var: float = 0.001**2) -> None:
+        """
+        Initialize a new dynamics sampler given sampling ``discretization``, the number of
+        samples requested ``samples_n`` and sampling, or observation,
+        noise variance ``noise_var``.
+        """
         self._gp_sampler = self._gp.new_sampler(discretization, samples_n, noise_var)
 
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+    def __call__(self, domain: tf.Tensor, with_noise: bool = False) -> tf.Tensor:
         domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = tf.stack([domain, self.policy(domain)], axis=1)
 
         # sample function
-        return self._gp_sampler(domain)
+        return self._gp_sampler(domain, with_noise)
 
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         domain = self._validate_type(domain)

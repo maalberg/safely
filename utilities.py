@@ -87,8 +87,12 @@ class gaussianprocess_sampler:
         self._noise_var = None
         self._alphas = None
 
-    def _initialize(self, samples_n: int = 1) -> None:
-        cov = self._kernel.K(self._discretization) + tf.eye(self._discretization.shape[0], dtype=gpflow.default_float()) * 1e-6
+    def _initialize(self, samples_n) -> None:
+        """
+        Initialize sampler that takes the ``samples_n`` number of samples.
+        Sampler properties, such as kernel, discretization and observation noise, are expected to be properly set elsewhere.
+        """
+        cov = self._kernel.K(self._discretization) + tf.eye(self._discretization.shape[0], dtype=gpflow.default_float()) * self._noise_var
 
         # sample normal distribution
         samples = np.random.multivariate_normal(np.zeros(self._discretization.shape[0]), cov, size=samples_n)
@@ -97,14 +101,14 @@ class gaussianprocess_sampler:
         self._alphas = [
             linalg.cho_solve(cho, samples[[sample_loc], :].T) for sample_loc in range(samples_n)]
 
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+    def __call__(self, domain: tf.Tensor, with_noise: bool = False) -> tf.Tensor:
         k = self._kernel.K(domain, self._discretization)
         mean = self._mean(domain)
         noise_var = self._noise_var
 
         def sample(alpha: tf.Tensor) -> tf.Tensor:
             y = mean + tf.matmul(k, alpha)
-            if noise_var is not None:
+            if with_noise:
                 y += tf.sqrt(noise_var) * tf.random.normal(tf.shape(y), dtype=gpflow.default_float())
             return y
 
@@ -131,7 +135,7 @@ class gaussianprocess:
     def new_sampler(
             self,
             discretization: tf.Tensor,
-            samples_n: int = 1, noise_var: float | None = None) -> gaussianprocess_sampler:
+            samples_n, noise_var: float) -> gaussianprocess_sampler:
 
         sampler = gaussianprocess_sampler()
         sampler._mean = self.gp.mean_function
