@@ -87,17 +87,17 @@ class gaussianprocess_sampler:
         self._noise_var = None
         self._alphas = None
 
-    def _initialize(self, samples_n) -> None:
+    def _initialize(self, mean: tf.Tensor, covariance: tf.Tensor, samples_n: int) -> None:
         """
         Initialize sampler that takes the ``samples_n`` number of samples.
+        The sampling of a random multivariate normal distrubution is based on ``mean`` and ``covariance``.
         Sampler properties, such as kernel, discretization and observation noise, are expected to be properly set elsewhere.
         """
-        cov = self._kernel.K(self._discretization) + tf.eye(self._discretization.shape[0], dtype=gpflow.default_float()) * self._noise_var
 
         # sample normal distribution
-        samples = np.random.multivariate_normal(np.zeros(self._discretization.shape[0]), cov, size=samples_n)
+        samples = np.random.multivariate_normal(mean, covariance, size=samples_n)
 
-        cho = linalg.cho_factor(cov, lower=True)
+        cho = linalg.cho_factor(covariance, lower=True)
         self._alphas = [
             linalg.cho_solve(cho, samples[[sample_loc], :].T) for sample_loc in range(samples_n)]
 
@@ -130,6 +130,7 @@ class gaussianprocess:
             cov_fn, mean_fn,
             noise_variance=obsv_noise_var)
 
+        self.gp_likelihood_var = obsv_noise_var
         self._update_cache()
 
     def new_sampler(
@@ -142,7 +143,14 @@ class gaussianprocess:
         sampler._kernel = self.gp.kernel
         sampler._discretization = discretization
         sampler._noise_var = noise_var
-        sampler._initialize(samples_n)
+
+        # initialize this sampler with the actual mean and covariance matrices; these
+        # matrices have extra last dimensions removed before passing
+        # to the initialization routine
+        mean, cov = self.predict(discretization, full_cov=True)
+        mean = tf.squeeze(mean, axis=-1)
+        cov = tf.squeeze(cov, axis=-1)
+        sampler._initialize(mean, cov, samples_n)
 
         return sampler
 
@@ -188,7 +196,7 @@ class gaussianprocess:
         # calculate covariances between training inputs corrupted by observation noise,
         # i.e. K(X, X) + sigma^2 * I, see (2.21) from Rasmussen & Williams, 2006
         train_i = self.train_i
-        cov = self.gp.kernel.K(train_i) + tf.eye(train_i.shape[0], dtype=gpflow.default_float()) * tf.constant(1e-6, dtype=gpflow.default_float())
+        cov = self.gp.kernel.K(train_i) + tf.eye(train_i.shape[0], dtype=gpflow.default_float()) * tf.constant(self.gp_likelihood_var, dtype=gpflow.default_float())
 
         # training outputs y, or targets
         train_o = self.train_o - self.gp.mean_function(train_i)
