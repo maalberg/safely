@@ -589,82 +589,75 @@ class triangulation(function):
         simplices += rectangles_origins
         return simplices
 
-    def _get_weights(self, points: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    def _get_hyperplanes(self, points: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """
-        Calculate a linear combination of triangulation weights for given ``points`` and
-        return these weights together with simplices, in
-        which the given ``points`` reside.
+        Get equations of hyperplanes that contain given ``points``. In general, these
+        equations have a linear form Ax = b, where A is a set of hyperplane
+        coefficients, and where b is an offset of a point from its origin
+        inside the hyperplane, computed as points - origins. Then, x
+        are barycentric coordinates of the given points inside the
+        hyperplane. Following this, the method returns an
+        inverted matrix A^{-1} and the origins of points
+        to compute values of x as x = A^{-1} * (points - origins).
+        In addition, the method returns simplices that contain given ``points``.
         """
 
-        # find simplices in the original domain [their indices actually],
-        # in which given points reside
-        points_simplices = self.find_simplex(points)
+        # find simplices in the original domain [their indices actually]
+        # that contain given points
+        simplices_loc = self.find_simplex(points)
 
         # extract simplices from the original domain at the found indices,
         # such that every simplex [basically a triangle]
-        # is a row with three indices
-        simplices = self.get_simplices(points_simplices)
+        # is a row with three point indices
+        simplices = self.simplices(simplices_loc)
 
-        # convert [note the modulus operation] the indeces of simpleces in the original domain
-        # to the ones in the unit domain
-        unit_simpleces = points_simplices % self._tri.nsimplex
-
-        # geometrically a hyperplane ax = b can be interpreted as a set of points x with
-        # a constant inner product with a given vector a, and b is then the
-        # inner product constant showing an offset from the origin.
-        #
-        # our intention here is to compute optimal weights x, based on the linear equation
-        # of a hyperplane, i.e. x = A^-1 * b
-        #
-        # therefore, first of all get hyperplane coefficients, or A^-1,
-        # corresponding to given unit simplices
-        hyperplanes = self._hyperplanes[unit_simpleces]
-
-        # next, in order to have the constant b, we need to know the origins
+        # having the indices of points that form simplices, it is
+        # possible to retrieve those points that are
+        # considered origins inside the simplices
         origins = self._domain.get_states(simplices[:, 0])
 
-        # prepare hyperplane points by clipping them
-        points = np.clip(
-            points,
-            self._domain.dims_lim[:, 0],
-            self._domain.dims_lim[:, 1])
+        # finally, to get hyperplane matrices convert [note the modulus operation] the indices
+        # of simplices in the original domain to the ones in the unit domain..
+        unit_simplices = simplices_loc % self._tri.nsimplex
 
-        # .. and determine the offset of points from the origin
-        offset = points - origins
+        # ..and get hyperplane matrices
+        hyperplanes = self._hyperplanes[unit_simplices]
 
-        # prepare an empty array to store weights
-        #
-        # array size is specified as (number of points, number of domain dimensions + 1), e.g.
-        # in a two-dimensional case a simplex is a triangle with three points, so
-        # number of domain dimensions + 1 yields 3.
-        weights = np.empty((len(points), self._domain.dims_n + 1))
-
-        # take a dot product x = A^-1 * b to compute weights
-        #
-        # in a two-dimensional case, the dot product produces two dimensions as well, yet
-        # we have an array with three dimensions, so we write the result
-        # the last two dimensions of the weights array.
-        np.sum(offset[:, :, np.newaxis] * hyperplanes, axis=1, out=weights[:, 1:])
-
-        # now we still need to fill the first dimension of the weights array,
-        # so we use the property of affine sets where the coefficients
-        # of points sum to one, see Boyd and Vandenberghe, 2004.
-        weights[:, 0] = 1 - np.sum(weights[:, 1:], axis=1)
-
-        return weights, simplices
+        return hyperplanes, origins, simplices
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
 
-        # make sure state has at least one row, i.e. one data point to sample
-        domain = tf.experimental.numpy.atleast_2d(domain)
+        # make sure domain has at least one row, i.e. one data point to sample
+        points = tf.experimental.numpy.atleast_2d(domain)
 
-        weights, simplices = self._get_weights(domain)
+        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
+        # where x are barycentric coordinates of the given points
+        hyperplanes, origins, simplices = self._get_hyperplanes(points)
+
+        # compute offsets of points from their origins
+        offsets = points - origins
+
+        # compute weights as barycentric coordinates of points inside this triangulation
+        #
+        # The dot product computation of A^{-1} * b first produces a result with size
+        # (number of points, number of domain dimensions), e.g. for a two-
+        # dimensional case the size will be (1, 2) for a single point.
+        # But the triangulation of a two-dimensional space is built
+        # from triangles, so there must be one more dimension to
+        # accomodate the last triangle vertex. And since the
+        # coordinates, or weights, are normalized, then
+        # the last coordinate can be computed as 1 - sum of others.
+        coords_others = tf.reduce_sum(offsets[:, :, tf.newaxis] * hyperplanes, axis=1)
+        coords_first = 1 - tf.reduce_sum(coords_others, axis=1, keepdims=True)
+        weights = tf.concat((coords_first, coords_others), axis=1)
 
         # based on determined simplices, gather parameters,
-        # i.e. function values on the vertices of triangulation
+        # i.e. function values at the vertices of this triangulation
         params = tf.gather(self.parameters, indices=simplices)
 
-        # compute approximated function values
+        # having weights, normalized from 0 to 1, and function values, or parameters, at the vertices
+        # of this triangulation, it is straightforward to scale the values by the weights,
+        # thus approximating function at the given arbitrary locations, or points
         return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
 
     @property
