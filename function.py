@@ -561,10 +561,11 @@ class triangulation(function):
         # nsimplex below.
         return unit_simplices + rectangles * self._tri.nsimplex
 
-    def get_simplices(self, indices: np.ndarray) -> np.ndarray:
+    def simplices(self, indices: np.ndarray) -> np.ndarray:
         """
-        Get the indices of points forming every simplex in the original domain
-        that resides at given ``indices``.
+        Given ``indices`` of simplices, get the indices of points that form these
+        simplices in the original domain. Each row of the returned
+        array contains the indices of simplex corners.
         """
 
         # convert given original domain indices to the unit domain ones

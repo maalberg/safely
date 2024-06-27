@@ -226,7 +226,7 @@ class gaussianprocess:
 def plot3d_triangulation(tri):
     parameters = tri.parameters
     states = tri._domain.states
-    simplices = tri.get_simplices(np.arange(tri.nsimplex))
+    simplices = tri.simplices(np.arange(tri.nsimplex))
 
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'})
 
