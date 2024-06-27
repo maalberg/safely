@@ -677,3 +677,47 @@ class triangulation(function):
     @property
     def dims_o_n(self) -> int:
         return 1
+
+
+# ---------------------------------------------------------------------------*/
+# - neural network
+
+class neuralnetwork(function):
+    def __init__(self, dims_i_n: int, layers: list[int], activations: list[str]) -> None:
+
+        # when working with gpflow, the data type of tensorflow must match
+        # the default one of gpflow
+        dtype = gpflow.default_float()
+
+        # construct a sequential model to wrap network layers
+        self._net = tf.keras.Sequential()
+
+        # specify input data shape;
+        # this also makes the model build its layers, and thus weights, automatically
+        self._net.add(tf.keras.Input(shape=(dims_i_n,), dtype=dtype))
+
+        # add hidden layers
+        for layer, activation in zip(layers[:-1], activations[:-1]):
+            self._net.add(
+                tf.keras.layers.Dense(
+                    layer,
+                    activation=activation,
+                    use_bias=True,
+                    dtype=dtype))
+
+        # add output layer
+        self._net.add(
+            tf.keras.layers.Dense(
+                layers[-1],
+                activation=activations[-1],
+                use_bias=False,
+                dtype=dtype))
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        domain = self._validate_type(domain)
+
+        return self._net(domain)
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        return self._net.trainable_variables
