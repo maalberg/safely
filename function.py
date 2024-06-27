@@ -429,19 +429,19 @@ class stochastic_stacked(function):
 # - triangulation as a function approximator
 
 class triangulation(function):
-    def __init__(self, domain: dom.gridworld, values: np.ndarray) -> None:
+    def __init__(self, domain: dom.gridworld, values: tf.Tensor) -> None:
         """
         This triangulation will approximate a function on the given ``domain`` and
         is parameterized with ``values``, where every row holds a value
-        corresponding to a data point from the ``domain``
+        corresponding to a data point from the ``domain``.
         """
         self._domain = domain
 
         # make sure there is at least one row in given values
-        self._parameters = np.atleast_2d(values)
+        self._parameters = tf.experimental.numpy.atleast_2d(values)
 
         # since the minimum number of dimensions
-        # supported by SciPy implementation of Delaunay algorithm is 2, check given domain
+        # supported by SciPy implementation of Delaunay algorithm is 2, then check given domain
         if len(self._domain.step) == 1:
             # define two points of a 1D unit hyper-rectangle
             # and instantiate a corresponding delaynay triangulation
@@ -588,7 +588,7 @@ class triangulation(function):
         simplices += rectangles_origins
         return simplices
 
-    def _get_weights(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _get_weights(self, points: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """
         Calculate a linear combination of triangulation weights for given ``points`` and
         return these weights together with simplices, in
@@ -652,19 +652,19 @@ class triangulation(function):
 
         return weights, simplices
 
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
-
-        # TODO: document!
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
 
         # make sure state has at least one row, i.e. one data point to sample
-        domain = np.atleast_2d(domain)
+        domain = tf.experimental.numpy.atleast_2d(domain)
 
         weights, simplices = self._get_weights(domain)
 
-        # sample function values
-        parameters = self._parameters[simplices]
+        # based on determined simplices, gather parameters,
+        # i.e. function values on the vertices of triangulation
+        params = tf.gather(self.parameters, indices=simplices)
 
-        return np.sum(weights[:, :, np.newaxis] * parameters, axis=1).reshape(-1, 1)
+        # compute approximated function values
+        return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
 
     @property
     def parameters(self) -> np.ndarray:

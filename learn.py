@@ -1,13 +1,17 @@
 import numpy as np
 import cvxpy as cp
 
+import tensorflow as tf
+import gpflow
+
 import function as fun
 
 class policy_iter:
     def __init__(
             self,
             policy: fun.function, dynamics: fun.function,
-            reward: fun.function, value: fun.function, discount: float = 0.98) -> None:
+            reward: fun.function, value: fun.function,
+            discount: tf.Tensor = tf.constant(0.98, dtype=gpflow.default_float())) -> None:
 
         self._policy = policy
         self._dynamics = dynamics
@@ -54,7 +58,7 @@ class policy_iter:
         # return optimal values
         return np.array(values.value)
 
-    def evaluate(self, states: np.ndarray, actions: np.ndarray = None, optimize: bool = False) -> np.ndarray:
+    def evaluate(self, states: tf.Tensor, actions: tf.Tensor = None, optimize: bool = False) -> tf.Tensor:
         """
         Evaluate policy on given ``states`` and ``actions`` to return an updated array of values.
         Provided flag ``optimize`` is set to True, convex optimization is used
@@ -67,7 +71,7 @@ class policy_iter:
             actions = self._policy(states)
 
         # compose domain from states and actions in order to evaluate dynamics
-        domain = np.column_stack([states, actions])
+        domain = tf.concat([states, actions], axis=1)
 
         # knowing dynamics, use states and actions to move to the next states
         states_next = self._dynamics(domain)
