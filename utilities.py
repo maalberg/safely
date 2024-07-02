@@ -1,8 +1,15 @@
+from abc import abstractmethod
+from abc import ABCMeta as interface
+
 import numpy as np
+
 import scipy as sp
 from scipy import linalg
+from scipy.spatial import Delaunay as scipydelaunay
+
 import tensorflow as tf
 import gpflow
+
 from matplotlib import pyplot as plt
 
 
@@ -37,25 +44,58 @@ def make_dlqr(a: np.ndarray, b: np.ndarray, q: np.ndarray, r: np.ndarray) -> tup
 
 
 # ---------------------------------------------------------------------------*/
+# - delaunay triangulation
+
+class delaunay(metaclass=interface):
+    @abstractmethod
+    def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def simplices(self) -> tf.Tensor:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def nsimplex(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def points(self) -> tf.Tensor:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def npoints(self) -> int:
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------*/
 # - one-dimensional delaunay triangulation
 
-class delaunay1d:
+class delaunay_1d(delaunay):
     """
     Class that mimics scipy delaunay algorithm for the triangulation of 1D data
     """
-    def __init__(self, points: np.ndarray) -> None:
+    def __init__(self, points: tf.Tensor) -> None:
+
+        # check dimensions
         if points.shape[1] > 1:
             raise AttributeError('err > this class is designed for 1D inputs')
         if points.shape[0] > 2:
             raise AttributeError('err > this class supports only two points')
 
-        self.points = points
+        self._points = points
+        self._npoints = len(points)
 
-        # there will be only one simplex
-        self.nsimplex = len(points) - 1
+        # there is only one simplex
+        self._nsimplex = len(points) - 1
 
-        self._bound_min = np.min(points)
-        self._bound_max = np.max(points)
+        # limits of this triangulation space
+        self._lim_min = tf.reduce_min(points)
+        self._lim_max = tf.reduce_max(points)
 
         # indices of the points forming the simplices in this triangulation
         #
@@ -63,17 +103,61 @@ class delaunay1d:
         # see the documentation of scipy delaunay algorithm
         #
         # the following single row represents one simplex formed by two points
-        self.simplices = np.array([[0, 1]])
+        self._simplices = tf.constant([[0, 1]])
 
-    def find_simplex(self, points: np.ndarray):
+    def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
         """
-        Find simplices containing given points
+        Locate given ``points`` in the single simplex of this delaunay representation, and
+        return either 0 if a point is located, or -1 otherwise.
         """
-        points = points.squeeze()
-        bound_miss = points > self._bound_max
-        bound_miss |= points < self._bound_min
+        points = tf.squeeze(points)
 
-        return np.where(bound_miss, -1, 0)
+        return tf.where(
+            condition=tf.math.logical_or(points > self._lim_max, points < self._lim_min),
+            x=-1, y=0)
+
+    @property
+    def simplices(self) -> tf.Tensor:
+        return self._simplices
+
+    @property
+    def nsimplex(self) -> int:
+        return self._nsimplex
+
+    @property
+    def points(self) -> tf.Tensor:
+        return self._points
+
+    @property
+    def npoints(self) -> int:
+        return self._npoints
+
+
+# ---------------------------------------------------------------------------*/
+# - multi-dimensional delaunay triangulation
+
+class delaunay_nd(delaunay):
+    def __init__(self, points: tf.Tensor) -> None:
+        self._tri = scipydelaunay(points)
+
+    def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
+        return tf.convert_to_tensor(self._tri.find_simplex(points))
+
+    @property
+    def simplices(self) -> tf.Tensor:
+        return tf.convert_to_tensor(self._tri.simplices)
+
+    @property
+    def nsimplex(self) -> int:
+        return self._tri.nsimplex
+
+    @property
+    def points(self) -> tf.Tensor:
+        return tf.convert_to_tensor(self._tri.points, dtype=gpflow.default_float())
+
+    @property
+    def npoints(self) -> int:
+        return self._tri.npoints
 
 
 # ---------------------------------------------------------------------------*/

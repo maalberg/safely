@@ -3,7 +3,6 @@ from abc import ABCMeta as interface
 
 from scipy import signal
 from scipy import linalg
-from scipy.spatial import Delaunay as delaunay
 
 from itertools import product as cartesian
 
@@ -435,100 +434,73 @@ class triangulation(function):
         is parameterized with ``values``, where every row holds a value
         corresponding to a data point from the ``domain``.
         """
-        self._domain = domain
-
-        # make sure there is at least one row in given values
-        self._parameters = tf.experimental.numpy.atleast_2d(values)
 
         # since the minimum number of dimensions
         # supported by SciPy implementation of Delaunay algorithm is 2, then check given domain
-        if len(self._domain.step) == 1:
+        if len(domain.step) == 1:
             # define two points of a 1D unit hyper-rectangle
             # and instantiate a corresponding delaynay triangulation
-            unit_points = np.array([[0], self._domain.step])
-            self._tri = utils.delaunay1d(unit_points)
+            unit_points = np.array([[0], domain.step])
+            tri = utils.delaunay_1d(unit_points)
         else:
             # based on domain discretization in every dimension,
             # define the limits of a unit hyper-rectangle
-            unit_lim = np.diag(self._domain.step)
+            unit_lim = np.diag(domain.step)
 
             # use a cartesian product to derive the corresponding vertices (points)
-            unit_points = np.array(list(cartesian(*unit_lim)))
+            unit_points = tf.convert_to_tensor(
+                list(cartesian(*unit_lim)),
+                dtype=gpflow.default_float())
 
             # perform triangulation of the unit hyper-rectangle
-            self._tri = delaunay(unit_points)
+            tri = utils.delaunay_nd(unit_points)
 
-        self._unit_simplices = self._map_simplices(self._tri, self._domain)
-        self._hyperplanes = self._init_hyperplanes(
-            self._tri,
-            self._unit_simplices,
-            self._domain)
+        simplices_map = self._create_simplices_map(domain, tri)
+        hyperplanes_mat = self._create_hyperplanes_mat(domain, simplices_map)
 
-        self.nsimplex = self._tri.nsimplex * self._domain.rectangles_n
+        self.nsimplex = tri.nsimplex * domain.rectangles_n
 
-    def _map_simplices(self, triangulation, domain: dom.gridworld) -> np.ndarray:
+        # make sure there is at least one row in given values
+        parameters = tf.experimental.numpy.atleast_2d(values)
+
+        self._hyperplanes_mat = hyperplanes_mat
+        self._simplices_map = simplices_map
+        self._parameters = parameters
+        self._domain = domain
+        self._tri = tri
+
+    def _create_simplices_map(self, domain: dom.gridworld, triangulation: utils.delaunay) -> tf.Tensor:
         """
-        Derive simplices from the ``triangulation`` of a unit hyper-rectangle, which
-        contains point indices mapped to the original ``domain``.
-
-        The function returns the remapped simplices.
+        Map simplices from internal unit ``triangulation`` to original ``domain`` and
+        return the indices of mapped simplices.
         """
 
         # get simplices from the internal triangulation of a unit domain
         #
-        # the simplices contain the indeces of points which form
+        # the simplices contain the indices of points which form
         # these simplices
-        unit_simplices = triangulation.simplices
+        simplices_unit = triangulation.simplices
+
+        # extract points that form unit domain simplices
+        #
+        # The points are reshaped to remove simplex-based partitioning of points,
+        # e.g. in a two-dimensional case a unit hyper-rectangle will
+        # have two simplices with 3 two-dimensional points each.
+        # So the idea is to change shape (2, 3, 2) into shape
+        # (6, 2), such there are 6 two-domensional states
+        # that can be further analyzed.
+        points_unit = tf.reshape(
+            tf.gather(triangulation.points, indices=simplices_unit),
+            [-1, domain.dims_n])
 
         # locate states [their indices] in the original domain,
         # which correspond to the points inside the internal unit hyper-rectangle
         #
-        # note that such interdomain localisation is possible, due to
-        # the regulatory of the original domain grid
-        original_indices = domain.locate_states(
-            triangulation.points + domain.offset)
-
-        unit_simplices_mapped = np.empty_like(unit_simplices)
-
-        # replace the indices inside the unit simplices with original ones
-        for this, index in enumerate(original_indices):
-            unit_simplices_mapped[unit_simplices == this] = index
-
-        return unit_simplices_mapped
-
-    def _init_hyperplanes(self, triangulation, simplices: np.ndarray, domain: dom.gridworld) -> np.ndarray:
-        """
-        Initialize hyperplane equations based on ``triangulation`` of a unit hyper-rectangle,
-        ``simplices`` mapped into the original domain and
-        the original ``domain`` itself.
-
-        If we consider a linear program Ax = b, then this method returns A^-1, which can then be
-        used to find optimal x = A^-1 b .
-        """
-        # there are as many hyperplanes as there are simplices in our unit hyper-rectangle,
-        # then each hyperplane is represented by a n-by-n matrix of coefficients,
-        # where n is equal to the number of input dimensions
-        hyperplanes = np.empty((triangulation.nsimplex, domain.dims_n, domain.dims_n))
-
-        # compute equation coefficients for every hyperplane (simplex)
-        for this, simplex in enumerate(simplices):
-
-            # get states, or points, in the original domain that form the current simplex,
-            # i.e. lie on this hyperplane
-            simplex_points = domain.get_states(simplex)
-
-            # subtract subsequent points from the first one to get vectors which lie in the plane, e.g.
-            # for two dimensions there will be three points of a triangular plane
-            # and, thus, two resulting vectors lying in this plane
-            simplex_vectors = simplex_points[1:] - simplex_points[:1]
-
-            # the simplex vectors above form a linear system of equations, e.g.
-            # there will be two equations of the form ax1 + bx2 = c for a two-dimensional
-            # case, so you get a 2-by-2 matrix A of coefficients. This matrix can be inverted to solve
-            # a linear program, such as A^-1 A x = A^-1 b => x = A^-1 b
-            hyperplanes[this] = np.linalg.inv(simplex_vectors)
-
-        return hyperplanes
+        # The original state indices are then reshaped to follow the unit domain
+        # simplex structure.
+        return tf.reshape(
+            domain.locate_states(points_unit + domain.offset),
+            shape=simplices_unit.shape)
 
     def find_simplex(self, points: np.ndarray) -> np.ndarray:
         """
@@ -561,18 +533,18 @@ class triangulation(function):
         # nsimplex below.
         return unit_simplices + rectangles * self._tri.nsimplex
 
-    def simplices(self, indices: np.ndarray) -> np.ndarray:
+    def simplices(self, indices: tf.Tensor) -> tf.Tensor:
         """
         Given ``indices`` of simplices, get the indices of points that form these
         simplices in the original domain. Each row of the returned
         array contains the indices of simplex corners.
         """
 
-        # convert given original domain indices to the unit domain ones
-        unit_indices = np.remainder(indices, self._tri.nsimplex)
+        # convert the given original domain indices/locations to the unit domain ones
+        indices_unit = tf.math.floormod(indices, self._tri.nsimplex)
 
         # extract unit simplices, which contain indices pointing to the original domain
-        simplices = self._unit_simplices[unit_indices].copy()
+        simplices = tf.gather(self._simplices_map, indices=indices_unit)
 
         # locate the upper-left corners of rectangles in the original domain that
         # correspond to given simplex indices
@@ -580,14 +552,44 @@ class triangulation(function):
         # convertion of indices to rectangles is based on the fact that
         # a rectangle will contain nsimplex simplices, so
         # we can perform the corresponding division
-        rectangles_origins = self._domain.locate_origins(
-            np.floor_divide(indices, self._tri.nsimplex))
-
+        rectangles_origins = self._domain.locate_origins(tf.math.floordiv(indices, self._tri.nsimplex))
         if simplices.ndim > 1:
-            rectangles_origins = rectangles_origins[:, np.newaxis] # add extra dimension
+            # add extra inner-most dimension
+            rectangles_origins = tf.expand_dims(rectangles_origins, axis=-1)
 
         simplices += rectangles_origins
         return simplices
+
+    def _create_hyperplanes_mat(self, domain: dom.gridworld, simplices: tf.Tensor) -> tf.Tensor:
+        """
+        Create hyperplane matrices. There are as many hyperplanes as there are ``simplices``,
+        and each hyperplane is represented by a n-by-n matrix of coefficients,
+        where n is equal to the number of ``domain`` dimensions.
+        """
+
+        # first, an empty list is created to be later filled with hyperplane matrices
+        hyperplanes_mat = []
+
+        # compute equation coefficients for every hyperplane (simplex)
+        for simplex in simplices:
+
+            # get states, or points, in the original domain that form the current simplex,
+            # i.e. lie on this hyperplane
+            simplex_points = domain.get_states(simplex)
+
+            # subtract subsequent points from the first one to get vectors which lie in the plane, e.g.
+            # for two dimensions there will be three points of a triangular plane
+            # and, thus, two resulting vectors lying in this plane
+            simplex_vectors = simplex_points[1:] - simplex_points[:1]
+
+            # the simplex vectors above form a linear system of equations, e.g.
+            # there will be two equations of the form ax1 + bx2 = c for a two-dimensional
+            # case, so you get a 2-by-2 matrix A of coefficients. This matrix can be inverted to solve
+            # a linear program, such as A^-1 A x = A^-1 b => x = A^-1 b
+            hyperplanes_mat.append(tf.linalg.inv(simplex_vectors))
+
+        # pack the filled list into an output tensor
+        return tf.stack(hyperplanes_mat)
 
     def _get_hyperplanes(self, points: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """
@@ -621,7 +623,7 @@ class triangulation(function):
         unit_simplices = simplices_loc % self._tri.nsimplex
 
         # ..and get hyperplane matrices
-        hyperplanes = self._hyperplanes[unit_simplices]
+        hyperplanes = tf.gather(self._hyperplanes_mat, indices=unit_simplices)
 
         return hyperplanes, origins, simplices
 
@@ -629,6 +631,11 @@ class triangulation(function):
 
         # make sure domain has at least one row, i.e. one data point to sample
         points = tf.experimental.numpy.atleast_2d(domain)
+
+        # clip any out-of-bound points to discretization limits
+        points = tf.clip_by_value(
+            points,
+            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
 
         # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
         # where x are barycentric coordinates of the given points
@@ -661,16 +668,13 @@ class triangulation(function):
         return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
 
     @property
-    def parameters(self) -> np.ndarray:
-        return self._parameters
+    def parameters(self) -> np.ndarray: return self._parameters
 
     @property
-    def dims_i_n(self) -> int:
-        return self._domain.dims_n
+    def dims_i_n(self) -> int: return self._domain.dims_n
 
     @property
-    def dims_o_n(self) -> int:
-        return 1
+    def dims_o_n(self) -> int: return 1
 
 
 # ---------------------------------------------------------------------------*/
@@ -684,15 +688,15 @@ class neuralnetwork(function):
         dtype = gpflow.default_float()
 
         # construct a sequential model to wrap network layers
-        self._net = tf.keras.Sequential()
+        self._model = tf.keras.Sequential()
 
         # specify input data shape;
         # this also makes the model build its layers, and thus weights, automatically
-        self._net.add(tf.keras.Input(shape=(dims_i_n,), dtype=dtype))
+        self._model.add(tf.keras.Input(shape=(dims_i_n,), dtype=dtype))
 
         # add hidden layers
         for layer, activation in zip(layers[:-1], activations[:-1]):
-            self._net.add(
+            self._model.add(
                 tf.keras.layers.Dense(
                     layer,
                     activation=activation,
@@ -700,7 +704,7 @@ class neuralnetwork(function):
                     dtype=dtype))
 
         # add output layer
-        self._net.add(
+        self._model.add(
             tf.keras.layers.Dense(
                 layers[-1],
                 activation=activations[-1],
@@ -710,8 +714,8 @@ class neuralnetwork(function):
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         domain = self._validate_type(domain)
 
-        return self._net(domain)
+        return self._model(domain)
 
     @property
     def parameters(self) -> tf.Tensor:
-        return self._net.trainable_variables
+        return self._model.trainable_variables
