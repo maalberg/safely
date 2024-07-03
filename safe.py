@@ -39,10 +39,10 @@ class lyapunov:
         """
 
         # evaluate error of dynamics
-        dyn_mean, dyn_var = self.dynamics.evaluate_error(self.domain.states)
+        dyn_mean, dyn_var = self.dynamics.evaluate_error(self.domain.points)
 
         # lyapunov derivative can indicate whether dynamics decreases toward an equillibrium point
-        lyap = self.candidate.differentiate(self.domain.states)
+        lyap = self.candidate.differentiate(self.domain.points)
 
         # so calculate stability error as a lyapunov derivative along dynamics
         err_mean = tf.reduce_sum(lyap * dyn_mean, axis=1, keepdims=True)
@@ -56,7 +56,7 @@ class lyapunov:
         """
 
         # evaluate error from uncertain dynamics
-        error = self.dynamics.evaluate_error(self.domain.states)[1]
+        error = self.dynamics.evaluate_error(self.domain.points)[1]
 
         # get state locations that are considered safe
         #
@@ -74,7 +74,7 @@ class lyapunov:
         # Based on a one-dimensional state locations, tf.gather will return slices
         # from states and errors with the same state dimensionality.
         error_safe = tf.gather(error, indices=state_locs, axis=0)
-        state_safe = tf.gather(self.domain.states, indices=state_locs, axis=0)
+        state_safe = tf.gather(self.domain.points, indices=state_locs, axis=0)
 
         # gather the currently learnable state
         #
@@ -103,7 +103,7 @@ class lyapunov:
         # roa is squeezed to remove the last dimension in order to comply with
         # the rest of the code, so e.g. if roa is of size (1000, 1),
         # then the squeezed version is of size (1000).
-        lyap = tf.squeeze(self.candidate(self.domain.states), axis=-1)
+        lyap = tf.squeeze(self.candidate(self.domain.points), axis=-1)
         lyap_max = tf.reduce_max(lyap)
         lyap_acc = lyap_max / 1e10
 
@@ -120,13 +120,13 @@ class lyapunov:
 
             # determine the boundary of a region of attraction
             safe_locs = tf.squeeze(tf.where(self.domain_safe), axis=-1)
-            state_safe = tf.gather(self.domain.states, indices=safe_locs, axis=0)
-            lyap_safe = tf.gather(self.candidate(self.domain.states), indices=safe_locs, axis=0)
+            state_safe = tf.gather(self.domain.points, indices=safe_locs, axis=0)
+            lyap_safe = tf.gather(self.candidate(self.domain.points), indices=safe_locs, axis=0)
             self._roa_bdry = tf.gather(state_safe, indices=tf.argmax(lyap_safe), axis=0)
 
     def sample(self) -> tf.Tensor:
-        dyn_samples = self.dynamics(self.domain.states)[0]
-        lyap_der_samples = self.candidate.differentiate(self.domain.states)
+        dyn_samples = self.dynamics(self.domain.points)[0]
+        lyap_der_samples = self.candidate.differentiate(self.domain.points)
 
         return tf.reduce_sum(lyap_der_samples * dyn_samples, axis=1, keepdims=True)
 

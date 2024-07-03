@@ -499,10 +499,10 @@ class triangulation(function):
         # The original state indices are then reshaped to follow the unit domain
         # simplex structure.
         return tf.reshape(
-            domain.locate_states(points_unit + domain.offset),
+            domain.locate_points(points_unit + domain.offset),
             shape=simplices_unit.shape)
 
-    def find_simplex(self, points: np.ndarray) -> np.ndarray:
+    def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
         """
         Find simplices, or triangles, which contain given ``points`` and
         return the indices of these simplices w.r.t. to the original domain.
@@ -515,10 +515,10 @@ class triangulation(function):
         #
         # > the points are scaled down (note the modulus operation) to the unit hyper-rectangle,
         #   whose size is denoted by the discretization of the original domain
-        unit_points = self._domain.shift_states(points, needs_clipping=True) % self._domain.step
+        points_unit = self._domain.shift_points(points, needs_clipping=True) % self._domain.step
 
         # find which points belong to which triangle inside a unit hyper-rectangle
-        unit_simplices = np.atleast_1d(self._tri.find_simplex(unit_points))
+        simplices_unit = tf.experimental.numpy.atleast_1d(self._tri.find_simplex(points_unit))
 
         # locate rectangles in the original domain, which are closest to given points
         rectangles = self._domain.locate_rectangles(points)
@@ -531,7 +531,7 @@ class triangulation(function):
         # in the original domain, note
         # the multiplication by
         # nsimplex below.
-        return unit_simplices + rectangles * self._tri.nsimplex
+        return simplices_unit + rectangles * self._tri.nsimplex
 
     def simplices(self, indices: tf.Tensor) -> tf.Tensor:
         """
@@ -557,8 +557,7 @@ class triangulation(function):
             # add extra inner-most dimension
             rectangles_origins = tf.expand_dims(rectangles_origins, axis=-1)
 
-        simplices += rectangles_origins
-        return simplices
+        return tf.add(simplices, rectangles_origins)
 
     def _create_hyperplanes_mat(self, domain: dom.gridworld, simplices: tf.Tensor) -> tf.Tensor:
         """
@@ -575,7 +574,7 @@ class triangulation(function):
 
             # get states, or points, in the original domain that form the current simplex,
             # i.e. lie on this hyperplane
-            simplex_points = domain.get_states(simplex)
+            simplex_points = domain.get_points(simplex)
 
             # subtract subsequent points from the first one to get vectors which lie in the plane, e.g.
             # for two dimensions there will be three points of a triangular plane
@@ -616,7 +615,7 @@ class triangulation(function):
         # having the indices of points that form simplices, it is
         # possible to retrieve those points that are
         # considered origins inside the simplices
-        origins = self._domain.get_states(simplices[:, 0])
+        origins = self._domain.get_points(simplices[:, 0])
 
         # finally, to get hyperplane matrices convert [note the modulus operation] the indices
         # of simplices in the original domain to the ones in the unit domain..

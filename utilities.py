@@ -141,11 +141,11 @@ class delaunay_nd(delaunay):
         self._tri = scipydelaunay(points)
 
     def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
-        return tf.convert_to_tensor(self._tri.find_simplex(points))
+        return tf.convert_to_tensor(self._tri.find_simplex(points), dtype=tf.int64)
 
     @property
     def simplices(self) -> tf.Tensor:
-        return tf.convert_to_tensor(self._tri.simplices)
+        return tf.convert_to_tensor(self._tri.simplices, dtype=tf.int64)
 
     @property
     def nsimplex(self) -> int:
@@ -309,13 +309,21 @@ class gaussianprocess:
 
 def plot3d_triangulation(tri):
     parameters = tri.parameters
-    states = tri._domain.states
+    points = tri._domain.points
     simplices = tri.simplices(np.arange(tri.nsimplex))
 
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'})
 
     ax.plot_trisurf(
-        states[:, 0], states[:, 1], parameters[:, 0],
+        points[:, 0], points[:, 1], parameters[:, 0],
         triangles=simplices)
 
     return fig, ax
+
+
+# ---------------------------------------------------------------------------*/
+# - tensorflow equivalent of numpy ravel_multi_index
+
+def tf_ravel_multi_index(multi_index, dims):
+    strides = tf.math.cumprod(dims, exclusive=True, reverse=True)
+    return tf.reduce_sum(multi_index * tf.expand_dims(strides, 1), axis=0)
