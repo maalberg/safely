@@ -40,7 +40,7 @@ class gridworld:
     def dims_sz(self) -> tf.Tensor: return self._dims_sz
 
     @property
-    def rectangles_n(self) -> int: return np.prod(self.dims_sz - 1)
+    def rectangles_n(self) -> int: return tf.math.reduce_prod(self.dims_sz - 1)
 
     @property
     def offset(self) -> tf.Tensor: return self.dims_lim[:, 0]
@@ -76,16 +76,19 @@ class gridworld:
 
     def locate_points(self, points: tf.Tensor) -> tf.Tensor:
         """
-        Return indices corresponding to given ``points``
+        Return indices corresponding to given ``points``.
         """
         points = tf.experimental.numpy.atleast_2d(points)
 
         # calculate locations as integers
         locations = (points - self.offset) * (1. / self.step)
-        locations = np.rint(locations).astype(int) # round float numbers to their nearest integers
+        # round float numbers to their nearest integers
+        locations = tf.cast(tf.math.rint(locations), dtype=tf.int64)
 
         # convert a tuple of index arrays - note the transpose - into an array of flat indices
-        return np.ravel_multi_index(locations.T, self.dims_sz)
+        return utils.tf_ravel_multi_index(
+            tf.transpose(locations),
+            dims=self.dims_sz)
 
     def shift_points(self, points: tf.Tensor, needs_clipping=True) -> tf.Tensor:
         """
