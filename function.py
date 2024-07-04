@@ -693,12 +693,15 @@ class neuralnetwork(function):
         # this also makes the model build its layers, and thus weights, automatically
         self._model.add(tf.keras.Input(shape=(dims_i_n,), dtype=dtype))
 
+        kernel_init = 'glorot_uniform'
+
         # add hidden layers
         for layer, activation in zip(layers[:-1], activations[:-1]):
             self._model.add(
                 tf.keras.layers.Dense(
                     layer,
                     activation=activation,
+                    kernel_initializer=kernel_init,
                     use_bias=True,
                     dtype=dtype))
 
@@ -707,6 +710,7 @@ class neuralnetwork(function):
             tf.keras.layers.Dense(
                 layers[-1],
                 activation=activations[-1],
+                kernel_initializer=kernel_init,
                 use_bias=False,
                 dtype=dtype))
 
