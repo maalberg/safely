@@ -2,7 +2,7 @@ from abc import abstractmethod
 from abc import ABCMeta as interface
 
 from scipy import signal
-from scipy import linalg
+from scipy.sparse import coo_matrix as sparse_mat
 
 from itertools import product as cartesian
 
@@ -626,19 +626,11 @@ class triangulation(function):
 
         return hyperplanes, origins, simplices
 
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-
-        # make sure domain has at least one row, i.e. one data point to sample
-        points = tf.experimental.numpy.atleast_2d(domain)
-
-        # clip any out-of-bound points to discretization limits
-        points = tf.clip_by_value(
-            points,
-            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
-
-        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
-        # where x are barycentric coordinates of the given points
-        hyperplanes, origins, simplices = self._get_hyperplanes(points)
+    def _get_weights(self, points: tf.Tensor, origins: tf.Tensor, hyperplanes_mat: tf.Tensor) -> tf.Tensor:
+        """
+        Helping method to compute weights given ``points``, their ``origins`` and the
+        corresponding hyperplane matrices A.
+        """
 
         # compute offsets of points from their origins
         offsets = points - origins
@@ -653,9 +645,31 @@ class triangulation(function):
         # accomodate the last triangle vertex. And since the
         # coordinates, or weights, are normalized, then
         # the last coordinate can be computed as 1 - sum of others.
-        coords_others = tf.reduce_sum(offsets[:, :, tf.newaxis] * hyperplanes, axis=1)
+        coords_others = tf.reduce_sum(offsets[:, :, tf.newaxis] * hyperplanes_mat, axis=1)
         coords_first = 1 - tf.reduce_sum(coords_others, axis=1, keepdims=True)
         weights = tf.concat((coords_first, coords_others), axis=1)
+
+        return weights
+
+    def __call__(self, points: tf.Tensor) -> tf.Tensor:
+        """
+        Approximate function values at given ``points`` using this triangulation.
+        """
+
+        # make sure domain has at least one row, i.e. one data point to sample
+        points = tf.experimental.numpy.atleast_2d(points)
+
+        # clip any out-of-bound points to discretization limits
+        points = tf.clip_by_value(
+            points,
+            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
+
+        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
+        # where x are barycentric coordinates of the given points
+        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
+
+        # compute weights
+        weights = self._get_weights(points, origins, hyperplanes_mat)
 
         # based on determined simplices, gather parameters,
         # i.e. function values at the vertices of this triangulation
@@ -665,6 +679,65 @@ class triangulation(function):
         # of this triangulation, it is straightforward to scale the values by the weights,
         # thus approximating function at the given arbitrary locations, or points
         return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
+
+    def create_params2points_mat(self, points: tf.Tensor):
+        """
+        Create a matrix A that expresses a transition from the parameters of this triangulation to
+        the given ``points``. In other words, this matrix allows to do the following
+        tri(points) = A * tri.parameters, i.e. the approximation of function
+        values at ``points`` using a linear matrix multiplication.
+        The returned matrix A is a sparse matrix.
+
+        The use case for this functionality could be in the application of convex optimization.
+        """
+
+        # make sure there is at least one point
+        points = tf.experimental.numpy.atleast_2d(points)
+
+        # clip any out-of-bound points to discretization limits
+        points = tf.clip_by_value(
+            points,
+            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
+
+        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
+        # where x are barycentric coordinates of the given points
+        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
+
+        # compute weights
+        weights = self._get_weights(points, origins, hyperplanes_mat)
+
+        # dimensions of a sparse matrix
+        #
+        # The matrix will be multiplied by a vector of function parameters, like A * params,
+        # and there are as many parameters as there are points in the function domain.
+        # So the number of matrix columns equals the length of the domain.
+        #
+        # The output from this multiplication is evaluated points, so the number of rows
+        # is equal to the number of points.
+        rows_n = len(simplices)
+        cols_n = len(self._domain)
+
+        # there are n points per simplex, so every index of the given points are
+        # repeated n times, and this array forms the row indices
+        # for a sparse matrix constructed below.
+        simplex_points_n = self.dims_i_n + 1
+        rows_loc = tf.repeat(tf.experimental.numpy.arange(len(points)), repeats=simplex_points_n)
+
+        # every simplex contains the indices of points that it is made of,
+        # and here we flatten the array of such indices.
+        cols_loc = tf.experimental.numpy.ravel(simplices)
+
+        # flatten weights to pass them as a one-dimensional array of matrix entries below
+        entries = tf.experimental.numpy.ravel(weights)
+
+        # construct a sparse matrix from three one-dimensional arrays:
+        # 1. entries of the new matrix
+        # 2. row indices of these matrix entries
+        # 3. column indices of the entries
+        params2points_mat = sparse_mat(
+            (entries, (rows_loc, cols_loc)), shape=(rows_n, cols_n))
+
+        return params2points_mat
 
     @property
     def parameters(self) -> np.ndarray: return self._parameters

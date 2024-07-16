@@ -10,7 +10,7 @@ class policy_iter:
     def __init__(
             self,
             policy: fun.function, dynamics: fun.function,
-            reward: fun.function, value: fun.function,
+            reward: fun.function, value: fun.triangulation,
             discount: tf.Tensor = tf.constant(0.98, dtype=gpflow.default_float())) -> None:
 
         self._policy = policy
@@ -20,49 +20,9 @@ class policy_iter:
         self._value = value
         self._discount = discount
 
-    def _evaluate_opt(self, states_next: np.ndarray, rewards: np.ndarray) -> np.ndarray:
-        """
-        Evaluate current policy with ``states_next`` and ``rewards`` and
-        return optimized value function parameters.
-
-        The Bellman's equation V(s) = R + gamma*P*V(s') can be viewed as a
-        linear program y = mx + c, where rewards R are constants c,
-        value function V(s) are variables x, a probability
-        transition matrix P is slope m.
-
-        So to find optimal values for x we can solve this linear program using
-        convex optimization techniques.
-        """
-
-        # values are optimization variables
-        values = cp.Variable(rewards.shape)
-
-        # Create a transition matrix, which characterizes the probability of transitioning
-        # from current states to their next states, or s' = A * s,
-        # where A is the transition matrix, and where s' and s
-        # are the next and current states, respectively.
-        values_derivative = self._value.parameters_derivative(states_next)
-        values_derivative = cp.Constant(values_derivative)
-
-        # maximizing the sum of future values shows the utility of choosing particular values
-        utility = cp.Maximize(cp.sum(values))
-
-        # constraint is composed of bellman's equation
-        constraints = [
-            values <= rewards + self._discount * values_derivative @ values]
-
-        # construct optimization problem and solve it
-        opt = cp.Problem(utility, constraints)
-        opt.solve()
-
-        # return optimal values
-        return np.array(values.value)
-
-    def evaluate(self, states: tf.Tensor, actions: tf.Tensor = None, optimize: bool = False) -> tf.Tensor:
+    def evaluate(self, states: tf.Tensor, actions: tf.Tensor = None) -> tf.Tensor:
         """
         Evaluate policy on given ``states`` and ``actions`` to return an updated array of values.
-        Provided flag ``optimize`` is set to True, convex optimization is used
-        to find an optimal value function.
         """
 
         if actions is None:
@@ -78,9 +38,6 @@ class policy_iter:
 
         # compute rewards for taking these actions given current states
         rewards = self._reward(domain)
-
-        if optimize:
-            return self._evaluate_opt(states_next, rewards)
 
         # predict future values and update them based on rewards and discount factor
         return rewards + self._discount * self._value(states_next)
@@ -114,3 +71,47 @@ class policy_iter:
         # so if we have, say, three possible actions to perform,
         # then one action is selected, which maximizes the long-term expected value for a particular state
         return actions[np.argmax(values_eval, axis=1)]
+
+class bellman:
+    def __init__(self, value: fun.triangulation, discount: tf.Tensor) -> None:
+        self.value = value
+        self.discount = discount
+
+    def solve_lp(self, states: tf.Tensor, rewards: tf.Tensor) -> tf.Tensor:
+        """
+        Solve the Bellman's equation as a linear program.
+
+        The Bellman's equation V(s) = R + gamma*P*V(s') can be viewed as a
+        linear program y = mx + c, where rewards R are constants c,
+        value function V(s) are variables x, a probability
+        transition matrix P is slope m.
+
+        So to find optimal values for x we can solve this linear program using
+        convex optimization techniques.
+        """
+
+        # values are optimization variables
+        values = cp.Variable(rewards.shape)
+
+        # Create a transition matrix, which characterizes the probability of transitioning
+        # from current states to their next states, or s' = A * s,
+        # where A is the transition matrix, and where s' and s
+        # are the next and current states, respectively.
+        values_derivative = self.value.create_params2points_mat(states)
+        values_derivative = cp.Constant(values_derivative)
+
+        # maximizing the sum of future values shows the utility of choosing particular values
+        #
+        # Since we maximize here, we call this a utility.
+        # If we minimized, we would call this a loss.
+        utility = cp.Maximize(cp.sum(values))
+
+        # constraint is composed of bellman's equation
+        constraints = [values <= rewards + self.discount * values_derivative * values]
+
+        # construct optimization problem and solve it
+        opt = cp.Problem(utility, constraints)
+        opt.solve(verbose=True)
+
+        # return optimal values
+        return tf.convert_to_tensor(values.value, dtype=gpflow.default_float())
