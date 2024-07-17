@@ -17,7 +17,7 @@ class policy_iter:
         self._dynamics = dynamics
 
         self._reward = reward
-        self._value = value
+        self.value = value
         self._discount = discount
 
     def evaluate(self, states: tf.Tensor, actions: tf.Tensor = None) -> tf.Tensor:
@@ -40,7 +40,7 @@ class policy_iter:
         rewards = self._reward(domain)
 
         # predict future values and update them based on rewards and discount factor
-        return rewards + self._discount * self._value(states_next)
+        return rewards + self._discount * self.value(states_next)
 
     def improve(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """

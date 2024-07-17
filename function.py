@@ -382,13 +382,36 @@ class saturated(function):
         self._func = func
         self._clip = clip
 
-    def __call__(self, domain: np.ndarray) -> np.ndarray:
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         value = self._func(domain)
         return tf.clip_by_value(value, -self._clip, self._clip)
 
     @property
-    def parameters(self) -> np.ndarray:
-        self._func.parameters
+    def parameters(self) -> tf.Tensor:
+        return self._func.parameters
+
+    @property
+    def dims_i_n(self) -> int:
+        return self._func.dims_i_n
+
+    @property
+    def dims_o_n(self) -> int:
+        return self._func.dims_o_n
+
+
+# ---------------------------------------------------------------------------*/
+# - decorator to negate the output of a function
+
+class negated(function):
+    def __init__(self, func: function) -> None:
+        self._func = func
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        return -self._func(domain)
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        return self._func.parameters
 
     @property
     def dims_i_n(self) -> int:
@@ -739,8 +762,11 @@ class triangulation(function):
 
         return params2points_mat
 
+    @property    
+    def points(self) -> tf.Tensor: return self._domain.points
+
     @property
-    def parameters(self) -> np.ndarray: return self._parameters
+    def parameters(self) -> tf.Tensor: return self._parameters
 
     @property
     def dims_i_n(self) -> int: return self._domain.dims_n

@@ -7,10 +7,10 @@ import scipy as sp
 from scipy import linalg
 from scipy.spatial import Delaunay as scipydelaunay
 
+from matplotlib import pyplot as plt
+
 import tensorflow as tf
 import gpflow
-
-from matplotlib import pyplot as plt
 
 
 # ---------------------------------------------------------------------------*/
@@ -305,12 +305,17 @@ class gaussianprocess:
 
 
 # ---------------------------------------------------------------------------*/
-# - plot triangulation in three-dimensions
+# - tensorflow equivalent of numpy ravel_multi_index
 
-def plot3d_triangulation(tri):
-    parameters = tri.parameters
-    points = tri._domain.points
-    simplices = tri.simplices(np.arange(tri.nsimplex))
+def tf_ravel_multi_index(multi_index, dims):
+    strides = tf.math.cumprod(dims, exclusive=True, reverse=True)
+    return tf.reduce_sum(multi_index * tf.expand_dims(strides, 1), axis=0)
+
+
+def plot3d_triangulation(triangulation) -> tuple:
+    parameters = triangulation.parameters
+    points = triangulation.points
+    simplices = triangulation.simplices(np.arange(triangulation.nsimplex))
 
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'})
 
@@ -319,11 +324,3 @@ def plot3d_triangulation(tri):
         triangles=simplices)
 
     return fig, ax
-
-
-# ---------------------------------------------------------------------------*/
-# - tensorflow equivalent of numpy ravel_multi_index
-
-def tf_ravel_multi_index(multi_index, dims):
-    strides = tf.math.cumprod(dims, exclusive=True, reverse=True)
-    return tf.reduce_sum(multi_index * tf.expand_dims(strides, 1), axis=0)
