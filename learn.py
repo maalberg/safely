@@ -13,7 +13,7 @@ class policy_iter:
             reward: fun.function, value: fun.triangulation,
             discount: tf.Tensor = tf.constant(0.98, dtype=gpflow.default_float())) -> None:
 
-        self._policy = policy
+        self.policy = policy
         self._dynamics = dynamics
 
         self._reward = reward
@@ -28,7 +28,7 @@ class policy_iter:
         if actions is None:
             # there are no given actions, so apply current policy to
             # produce actions according to given states
-            actions = self._policy(states)
+            actions = self.policy(states)
 
         # compose domain from states and actions in order to evaluate dynamics
         domain = tf.concat([states, actions], axis=1)
