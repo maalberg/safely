@@ -90,13 +90,13 @@ class quadratic(differentiable):
 
 
 # ---------------------------------------------------------------------------*/
-# - stochastic function
+# - interface for stochastic dynamics with a control policy
 
-class stochastic(function):
+class dynamics(function):
     @abstractmethod
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """
-        Evaluate the error of this uncertainty in given ``domain`` and return a predicted
+        Evaluate the error of these stochastic dynamics in given ``domain`` and return a predicted
         mean value together with a corresponding variance.
         """
         raise NotImplementedError
@@ -104,7 +104,7 @@ class stochastic(function):
     @abstractmethod
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
         """
-        Let this uncertainty observe datapoints in ``domain`` with given ``value``.
+        Let these stochastic dynamics observe datapoints in ``domain`` with given ``value``.
         """
         raise NotImplementedError
 
@@ -112,39 +112,56 @@ class stochastic(function):
     @abstractmethod
     def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
         """
-        Datapoints observed by this uncertainty, see method ``observe_datapoints``.
+        Datapoints observed by these stochastic dynamics, see method ``observe_datapoints``.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def policy(self) -> function:
+        """
+        Policy that controls these stochastic dynamics.
+        """
+        raise NotImplementedError
+
+    @policy.setter
+    @abstractmethod
+    def policy(self, policy: function) -> None:
+        """
+        Set a new ``policy`` to control these stochastic dynamics.
         """
         raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------*/
-# - dynamics
+# - scalar dynamics realized as stochastic dynamics with control
 
-class dynamics(stochastic):
+class dynamics_scalar(dynamics):
     def __init__(
             self,
             model: function, error: gpflow.kernels.Kernel, noise: float,
             policy: function | None = None) -> None:
         """
-        Stochastic dynamics are defined by ``model`` and ``error``, where
-        the former represents prior knowledge about dynamical behavior, whereas
-        the latter describes expected model uncertainty. In order to facilitate the
-        sampling of these dynamics, ``domain_sampling`` defines the discretization of
-        the sampling. Finally, ``policy`` can be set at a later stage, which allows swapping policies.
+        Stochastic dynamics are defined by ``model``, ``error`` and ``noise``.
+        The ``model`` represents prior knowledge about dynamical behavior, whereas
+        the ``error`` describes expected model uncertainty. The ``noise`` defines the
+        variance of observation noise. Finally, ``policy`` is control applied to stabilize
+        the dynamics. The ``policy`` can be none and set later, which allows swapping the policies.
         """
 
         # save parameters of given mean model to return as parameters of this class
         self._parameters = model.parameters
 
-        # make policy a publicly available property of this class
-        self.policy = policy
-
         # these stochastic dynamics are internally implemented in terms of a gaussian process
         self._gp = utils.gaussianprocess(
             model, error,
             dims_n=(model.dims_i_n, model.dims_o_n),
-            obsv_noise_var=noise)
+            obsv_ns_var=noise)
 
+        # policy may be none and set later
+        self._policy = policy
+
+        # one needs to explicitly initialize a sampler, see ``initialize_sampler`` method
         self._gp_sampler = None
 
     def initialize_sampler(
@@ -193,6 +210,59 @@ class dynamics(stochastic):
 
     @property
     def parameters(self) -> tf.Tensor: return self._parameters
+
+    @property
+    def policy(self) -> function: return self._policy
+
+    @policy.setter
+    def policy(self, policy: function) -> None:
+        self._policy = policy
+
+
+# ---------------------------------------------------------------------------*/
+# - scalar dynamics stacked to form a vector-valued version
+
+class dynamics_vector(dynamics):
+    def __init__(self, dynamics: list[dynamics]) -> None:
+        self._dyn = dynamics
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        # evaluate the means of all dynamics inside the list
+        return tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
+
+    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        mean = tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
+        err = tf.concat([dyn.evaluate_error(domain)[1] for dyn in self._dyn], axis=1)
+        return mean, err
+
+    def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
+        pass
+
+    @property
+    def datapoints_observed(self) -> tuple[tf.Tensor, tf.Tensor]:
+        pass
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        return tf.constant([dyn.parameters for dyn in self._dyn])
+
+    @property
+    def policy(self) -> function:
+        # policy is expected to be the same for all scalar dynamics, so take the first one
+        return self._dyn[0].policy
+
+    @policy.setter
+    def policy(self, policy: function) -> None:
+        for dyn in self._dyn:
+            dyn.policy = policy
+
+    @property
+    def dims_i_n(self) -> int:
+        return self._dyn[0].dims_i_n
+
+    @property
+    def dims_o_n(self) -> int:
+        return tf.reduce_sum([dyn.dims_o_n for dyn in self._dyn])
 
 
 # ---------------------------------------------------------------------------*/
@@ -420,31 +490,6 @@ class negated(function):
     @property
     def dims_o_n(self) -> int:
         return self._func.dims_o_n
-
-
-# ---------------------------------------------------------------------------*/
-# - one-dimensional stochastic functions stacked to form a vector function
-
-class stochastic_stacked(function):
-    def __init__(self, functions: list[stochastic]) -> None:
-        self._funcs = functions
-
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-
-        # evaluate the means of all stochastic functions inside the list
-        return tf.concat([func.evaluate_error(domain)[0] for func in self._funcs], axis=1)
-
-    @property
-    def parameters(self) -> tf.Tensor:
-        return tf.constant([func.parameters for func in self._funcs])
-
-    @property
-    def dims_i_n(self) -> int:
-        return self._funcs[0].dims_i_n
-
-    @property
-    def dims_o_n(self) -> int:
-        return tf.reduce_sum([func.dims_o_n for func in self._funcs])
 
 
 # ---------------------------------------------------------------------------*/

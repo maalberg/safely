@@ -205,20 +205,19 @@ class gaussianprocess_sampler:
 class gaussianprocess:
     def __init__(
             self,
-            mean_fn, cov_fn: gpflow.kernels.Kernel,
-            dims_n: tuple[int, int],
-            obsv_noise_var: float) -> None:
+            mean_fn, cov_fn: gpflow.kernels.Kernel, obsv_ns_var: float,
+            dims_n: tuple[int, int]) -> None:
 
-        # create a gaussian process with
-        # initial observed zero-data at the origin, i.e. x=0, y=0.
+        # define initial observed zero-data at the origin, i.e. x=0, y=0.
         train_i = tf.zeros((1, dims_n[0]), dtype=gpflow.default_float())
         train_o = tf.zeros((1, dims_n[1]), dtype=gpflow.default_float())
+
+        # create a gaussian process regression model
         self.gp = gpflow.models.GPR(
             (train_i, train_o),
-            cov_fn, mean_fn,
-            noise_variance=obsv_noise_var)
+            cov_fn, mean_fn, noise_variance=obsv_ns_var)
 
-        self.gp_likelihood_var = obsv_noise_var
+        self.gp_likelihood_var = obsv_ns_var
         self._update_cache()
 
     def new_sampler(

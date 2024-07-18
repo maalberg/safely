@@ -7,7 +7,7 @@ import domain as dom
 class lyapunov:
     def __init__(
             self,
-            candidate: fun.differentiable, dynamics: fun.stochastic,
+            candidate: fun.differentiable, dynamics: fun.dynamics,
             domain: dom.gridworld, domain_safe: list[bool] | None = None) -> None:
 
         # candidate, dynamics and domain are fixed and cannot be changed later
@@ -21,7 +21,7 @@ class lyapunov:
     def candidate(self) -> fun.differentiable: return self._candidate
 
     @property
-    def dynamics(self) -> fun.stochastic: return self._dynamics
+    def dynamics(self) -> fun.dynamics: return self._dynamics
 
     @property
     def domain(self) -> dom.gridworld: return self._domain
