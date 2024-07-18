@@ -311,6 +311,9 @@ def tf_ravel_multi_index(multi_index, dims):
     return tf.reduce_sum(multi_index * tf.expand_dims(strides, 1), axis=0)
 
 
+# ---------------------------------------------------------------------------*/
+# - plot triangulation in 3D
+
 def plot3d_triangulation(triangulation) -> tuple:
     parameters = triangulation.parameters
     points = triangulation.points
