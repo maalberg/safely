@@ -7,7 +7,7 @@ import domain as dom
 class lyapunov:
     def __init__(
             self,
-            candidate: fun.differentiable, dynamics: fun.dynamics,
+            candidate: fun.function, dynamics: fun.dynamics,
             domain: dom.gridworld, domain_safe: list[bool] | None = None) -> None:
 
         # candidate, dynamics and domain are fixed and cannot be changed later
@@ -18,7 +18,7 @@ class lyapunov:
         self._init_roa(domain_safe)
 
     @property
-    def candidate(self) -> fun.differentiable: return self._candidate
+    def candidate(self) -> fun.function: return self._candidate
 
     @property
     def dynamics(self) -> fun.dynamics: return self._dynamics
@@ -42,7 +42,7 @@ class lyapunov:
         dyn_mean, dyn_var = self.dynamics.evaluate_error(self.domain.points)
 
         # lyapunov derivative can indicate whether dynamics decreases toward an equillibrium point
-        lyap = self.candidate.differentiate(self.domain.points)
+        lyap = self.candidate.gradient(self.domain.points)
 
         # so calculate stability error as a lyapunov derivative along dynamics
         err_mean = tf.reduce_sum(lyap * dyn_mean, axis=1, keepdims=True)
@@ -126,7 +126,7 @@ class lyapunov:
 
     def sample(self) -> tf.Tensor:
         dyn_samples = self.dynamics(self.domain.points)[0]
-        lyap_der_samples = self.candidate.differentiate(self.domain.points)
+        lyap_der_samples = self.candidate.gradient(self.domain.points)
 
         return tf.reduce_sum(lyap_der_samples * dyn_samples, axis=1, keepdims=True)
 

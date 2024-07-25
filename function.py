@@ -25,6 +25,19 @@ class function(metaclass=interface):
         """
         raise NotImplementedError
 
+    def __neg__(self):
+        """
+        Negate this function by multiplying it with -1.
+        """
+        return multiplied(self, tf.constant(-1, gpflow.default_float()))
+
+    @abstractmethod
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        """
+        Return gradient of this function on the given ``domain``.
+        """
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def parameters(self) -> tf.Tensor:
@@ -34,25 +47,64 @@ class function(metaclass=interface):
         raise NotImplementedError
 
     @property
-    def dims_i_n(self) -> int: return self.parameters.shape[1]
+    def dims_i_n(self) -> int:
+        """
+        Number of input dimensions.
+        """
+        return self.parameters.shape[1]
 
     @property
-    def dims_o_n(self) -> int: return self.parameters.shape[0]
-
-    def _validate_type(self, domain: tf.Tensor) -> tf.Tensor:
-        return tf.convert_to_tensor(domain, dtype=gpflow.default_float()) if isinstance(domain, np.ndarray) else domain
+    def dims_o_n(self) -> int:
+        """
+        Number of output dimensions.
+        """
+        return self.parameters.shape[0]
 
 
 # ---------------------------------------------------------------------------*/
-# - differentiable function
+# - constant function
 
-class differentiable(function):
-    @abstractmethod
-    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
-        """
-        Differentiate this function on given ``domain``.
-        """
-        raise NotImplementedError
+class constant(function):
+    def __init__(self, constant: tf.Tensor) -> None:
+        self.constant = constant
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        return self.constant
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        return tf.constant(0, gpflow.default_float())
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        return self.constant
+
+
+# ---------------------------------------------------------------------------*/
+# - multiplied function
+
+class multiplied(function):
+    def __init__(self, func_this: function, func_that: function) -> None:
+
+        # check for constants passed as functions and convert
+        # them to constant functions
+        if not isinstance(func_this, function):
+            func_this = constant(func_this)
+        if not isinstance(func_that, function):
+            func_that = constant(func_that)
+
+        self.func_this = func_this
+        self.func_that = func_that
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        return self.func_this(domain) * self.func_that(domain)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        # apply the product rule to compute the gradient of a multiplied function
+        return self.func_this.gradient(domain) * self.func_that(domain) + self.func_this(domain) * self.func_that.gradient(domain)
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        self.func_this.parameters + self.func_that.parameters
 
 
 # ---------------------------------------------------------------------------*/
@@ -63,8 +115,10 @@ class linear(function):
         self._parameters = tf.concat(tuple(map(tf.experimental.numpy.atleast_2d, parameters)), axis=1)
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
         return tf.matmul(domain, self._parameters, transpose_b=True)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
 
     @property
     def parameters(self) -> tf.Tensor: return self._parameters
@@ -73,16 +127,14 @@ class linear(function):
 # ---------------------------------------------------------------------------*/
 # - quadratic function
 
-class quadratic(differentiable):
+class quadratic(function):
     def __init__(self, parameters: tf.Tensor) -> None:
         self._parameters = tf.experimental.numpy.atleast_2d(parameters)
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
         return tf.reduce_sum(tf.matmul(domain, self._parameters) * domain, axis=1, keepdims=True)
 
-    def differentiate(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
         return tf.matmul(domain, self._parameters + tf.transpose(self._parameters))
 
     @property
@@ -180,7 +232,6 @@ class dynamics_scalar(dynamics):
         Sample this function on given ``domain`` with the possibility to add observation
         noise when ``with_noise`` parameter is true.
         """
-        domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
@@ -188,8 +239,10 @@ class dynamics_scalar(dynamics):
         # sample function
         return self._gp_sampler(domain, with_noise)
 
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
+
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-        domain = self._validate_type(domain)
 
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
@@ -198,8 +251,6 @@ class dynamics_scalar(dynamics):
         return self._gp.predict(domain)
 
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
-        domain = self._validate_type(domain)
-        value = self._validate_type(value)
 
         # observe given datapoints
         self._gp.update_data(domain, value)
@@ -229,6 +280,9 @@ class dynamics_vector(dynamics):
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         # evaluate the means of all dynamics inside the list
         return tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
 
     def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         mean = tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
@@ -298,6 +352,9 @@ class pendulum_inv(function):
 
         # call internal dynamics
         return self._solve_ode(domain)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
 
     def _solve_ode(self, domain: tf.Tensor) -> tf.Tensor:
         """
@@ -456,28 +513,8 @@ class saturated(function):
         value = self._func(domain)
         return tf.clip_by_value(value, -self._clip, self._clip)
 
-    @property
-    def parameters(self) -> tf.Tensor:
-        return self._func.parameters
-
-    @property
-    def dims_i_n(self) -> int:
-        return self._func.dims_i_n
-
-    @property
-    def dims_o_n(self) -> int:
-        return self._func.dims_o_n
-
-
-# ---------------------------------------------------------------------------*/
-# - decorator to negate the output of a function
-
-class negated(function):
-    def __init__(self, func: function) -> None:
-        self._func = func
-
-    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        return -self._func(domain)
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
 
     @property
     def parameters(self) -> tf.Tensor:
@@ -537,38 +574,76 @@ class triangulation(function):
         self._domain = domain
         self._tri = tri
 
-    def _create_simplices_map(self, domain: dom.gridworld, triangulation: utils.delaunay) -> tf.Tensor:
+    def __call__(self, points: tf.Tensor) -> tf.Tensor:
         """
-        Map simplices from internal unit ``triangulation`` to original ``domain`` and
-        return the indices of mapped simplices.
+        Approximate function values at given ``points`` using this triangulation.
         """
 
-        # get simplices from the internal triangulation of a unit domain
-        #
-        # the simplices contain the indices of points which form
-        # these simplices
-        simplices_unit = triangulation.simplices
+        # make sure domain has at least one row, i.e. one data point to sample
+        points = tf.experimental.numpy.atleast_2d(points)
 
-        # extract points that form unit domain simplices
-        #
-        # The points are reshaped to remove simplex-based partitioning of points,
-        # e.g. in a two-dimensional case a unit hyper-rectangle will
-        # have two simplices with 3 two-dimensional points each.
-        # So the idea is to change shape (2, 3, 2) into shape
-        # (6, 2), such there are 6 two-domensional states
-        # that can be further analyzed.
-        points_unit = tf.reshape(
-            tf.gather(triangulation.points, indices=simplices_unit),
-            [-1, domain.dims_n])
+        # clip any out-of-bound points to discretization limits
+        points = tf.clip_by_value(
+            points,
+            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
 
-        # locate states [their indices] in the original domain,
-        # which correspond to the points inside the internal unit hyper-rectangle
+        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
+        # where x are barycentric coordinates of the given points
+        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
+
+        # compute weights
+        weights = self._get_weights(points, origins, hyperplanes_mat)
+
+        # based on determined simplices, gather parameters,
+        # i.e. function values at the vertices of this triangulation
+        params = tf.gather(self.parameters, indices=simplices)
+
+        # having weights, normalized from 0 to 1, and function values, or parameters, at the vertices
+        # of this triangulation, it is straightforward to scale the values by the weights,
+        # thus approximating function at the given arbitrary locations, or points
+        return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
+
+    def gradient(self, points: tf.Tensor) -> tf.Tensor:
+
+        # make sure domain has at least one row, i.e. one data point to sample
+        points = tf.experimental.numpy.atleast_2d(points)
+
+        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
+        hyperplanes_mat0 = -tf.reduce_sum(hyperplanes_mat, axis=2, keepdims=True)
+
+        weights = tf.concat([hyperplanes_mat0, hyperplanes_mat], axis=2)
+        params = tf.gather(self.parameters, indices=simplices)
+
+        gradient = tf.einsum('ijk,ikl->ilj', weights, params)
+        if tf.shape(gradient)[1] == 1:
+            gradient = tf.squeeze(gradient, axis=1)
+        return gradient
+
+    def simplices(self, indices: tf.Tensor) -> tf.Tensor:
+        """
+        Given ``indices`` of simplices, get the indices of points that form these
+        simplices in the original domain. Each row of the returned
+        array contains the indices of simplex corners.
+        """
+
+        # convert the given original domain indices/locations to the unit domain ones
+        indices_unit = tf.math.floormod(indices, self._tri.nsimplex)
+
+        # extract unit simplices, which contain indices pointing to the original domain
+        simplices = tf.gather(self._simplices_map, indices=indices_unit)
+
+        # locate the upper-left corners of rectangles in the original domain that
+        # correspond to given simplex indices
         #
-        # The original state indices are then reshaped to follow the unit domain
-        # simplex structure.
-        return tf.reshape(
-            domain.locate_points(points_unit + domain.offset),
-            shape=simplices_unit.shape)
+        # convertion of indices to rectangles is based on the fact that
+        # a rectangle will contain nsimplex simplices, so
+        # we can perform the corresponding division
+        rectangles_origins = self._domain.locate_origins(tf.math.floordiv(indices, self._tri.nsimplex))
+        if simplices.ndim > 1:
+            # add extra inner-most dimension
+            rectangles_origins = tf.expand_dims(rectangles_origins, axis=-1)
+
+        return tf.add(simplices, rectangles_origins)
 
     def find_simplex(self, points: tf.Tensor) -> tf.Tensor:
         """
@@ -601,31 +676,109 @@ class triangulation(function):
         # nsimplex below.
         return simplices_unit + rectangles * self._tri.nsimplex
 
-    def simplices(self, indices: tf.Tensor) -> tf.Tensor:
+    def create_params2points_mat(self, points: tf.Tensor):
         """
-        Given ``indices`` of simplices, get the indices of points that form these
-        simplices in the original domain. Each row of the returned
-        array contains the indices of simplex corners.
+        Create a matrix A that expresses a transition from the parameters of this triangulation to
+        the given ``points``. In other words, this matrix allows to do the following
+        tri(points) = A * tri.parameters, i.e. the approximation of function
+        values at ``points`` using a linear matrix multiplication.
+        The returned matrix A is a sparse matrix.
+
+        The use case for this functionality could be in the application of convex optimization.
         """
 
-        # convert the given original domain indices/locations to the unit domain ones
-        indices_unit = tf.math.floormod(indices, self._tri.nsimplex)
+        # make sure there is at least one point
+        points = tf.experimental.numpy.atleast_2d(points)
 
-        # extract unit simplices, which contain indices pointing to the original domain
-        simplices = tf.gather(self._simplices_map, indices=indices_unit)
+        # clip any out-of-bound points to discretization limits
+        points = tf.clip_by_value(
+            points,
+            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
 
-        # locate the upper-left corners of rectangles in the original domain that
-        # correspond to given simplex indices
+        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
+        # where x are barycentric coordinates of the given points
+        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
+
+        # compute weights
+        weights = self._get_weights(points, origins, hyperplanes_mat)
+
+        # dimensions of a sparse matrix
         #
-        # convertion of indices to rectangles is based on the fact that
-        # a rectangle will contain nsimplex simplices, so
-        # we can perform the corresponding division
-        rectangles_origins = self._domain.locate_origins(tf.math.floordiv(indices, self._tri.nsimplex))
-        if simplices.ndim > 1:
-            # add extra inner-most dimension
-            rectangles_origins = tf.expand_dims(rectangles_origins, axis=-1)
+        # The matrix will be multiplied by a vector of function parameters, like A * params,
+        # and there are as many parameters as there are points in the function domain.
+        # So the number of matrix columns equals the length of the domain.
+        #
+        # The output from this multiplication is evaluated points, so the number of rows
+        # is equal to the number of points.
+        rows_n = len(simplices)
+        cols_n = len(self._domain)
 
-        return tf.add(simplices, rectangles_origins)
+        # there are n points per simplex, so every index of the given points are
+        # repeated n times, and this array forms the row indices
+        # for a sparse matrix constructed below.
+        simplex_points_n = self.dims_i_n + 1
+        rows_loc = tf.repeat(tf.experimental.numpy.arange(len(points)), repeats=simplex_points_n)
+
+        # every simplex contains the indices of points that it is made of,
+        # and here we flatten the array of such indices.
+        cols_loc = tf.experimental.numpy.ravel(simplices)
+
+        # flatten weights to pass them as a one-dimensional array of matrix entries below
+        entries = tf.experimental.numpy.ravel(weights)
+
+        # construct a sparse matrix from three one-dimensional arrays:
+        # 1. entries of the new matrix
+        # 2. row indices of these matrix entries
+        # 3. column indices of the entries
+        params2points_mat = sparse_mat(
+            (entries, (rows_loc, cols_loc)), shape=(rows_n, cols_n))
+
+        return params2points_mat
+
+    @property    
+    def points(self) -> tf.Tensor: return self._domain.points
+
+    @property
+    def parameters(self) -> tf.Tensor: return self._parameters
+
+    @property
+    def dims_i_n(self) -> int: return self._domain.dims_n
+
+    @property
+    def dims_o_n(self) -> int: return 1
+
+    def _create_simplices_map(self, domain: dom.gridworld, triangulation: utils.delaunay) -> tf.Tensor:
+        """
+        Map simplices from internal unit ``triangulation`` to original ``domain`` and
+        return the indices of mapped simplices.
+        """
+
+        # get simplices from the internal triangulation of a unit domain
+        #
+        # the simplices contain the indices of points which form
+        # these simplices
+        simplices_unit = triangulation.simplices
+
+        # extract points that form unit domain simplices
+        #
+        # The points are reshaped to remove simplex-based partitioning of points,
+        # e.g. in a two-dimensional case a unit hyper-rectangle will
+        # have two simplices with 3 two-dimensional points each.
+        # So the idea is to change shape (2, 3, 2) into shape
+        # (6, 2), such there are 6 two-domensional states
+        # that can be further analyzed.
+        points_unit = tf.reshape(
+            tf.gather(triangulation.points, indices=simplices_unit),
+            [-1, domain.dims_n])
+
+        # locate states [their indices] in the original domain,
+        # which correspond to the points inside the internal unit hyper-rectangle
+        #
+        # The original state indices are then reshaped to follow the unit domain
+        # simplex structure.
+        return tf.reshape(
+            domain.locate_points(points_unit + domain.offset),
+            shape=simplices_unit.shape)
 
     def _create_hyperplanes_mat(self, domain: dom.gridworld, simplices: tf.Tensor) -> tf.Tensor:
         """
@@ -719,106 +872,6 @@ class triangulation(function):
 
         return weights
 
-    def __call__(self, points: tf.Tensor) -> tf.Tensor:
-        """
-        Approximate function values at given ``points`` using this triangulation.
-        """
-
-        # make sure domain has at least one row, i.e. one data point to sample
-        points = tf.experimental.numpy.atleast_2d(points)
-
-        # clip any out-of-bound points to discretization limits
-        points = tf.clip_by_value(
-            points,
-            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
-
-        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
-        # where x are barycentric coordinates of the given points
-        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
-
-        # compute weights
-        weights = self._get_weights(points, origins, hyperplanes_mat)
-
-        # based on determined simplices, gather parameters,
-        # i.e. function values at the vertices of this triangulation
-        params = tf.gather(self.parameters, indices=simplices)
-
-        # having weights, normalized from 0 to 1, and function values, or parameters, at the vertices
-        # of this triangulation, it is straightforward to scale the values by the weights,
-        # thus approximating function at the given arbitrary locations, or points
-        return tf.reduce_sum(weights[:, :, tf.newaxis] * params, axis=1)
-
-    def create_params2points_mat(self, points: tf.Tensor):
-        """
-        Create a matrix A that expresses a transition from the parameters of this triangulation to
-        the given ``points``. In other words, this matrix allows to do the following
-        tri(points) = A * tri.parameters, i.e. the approximation of function
-        values at ``points`` using a linear matrix multiplication.
-        The returned matrix A is a sparse matrix.
-
-        The use case for this functionality could be in the application of convex optimization.
-        """
-
-        # make sure there is at least one point
-        points = tf.experimental.numpy.atleast_2d(points)
-
-        # clip any out-of-bound points to discretization limits
-        points = tf.clip_by_value(
-            points,
-            self._domain.dims_lim[:, 0], self._domain.dims_lim[:, 1])
-
-        # get hyperplane geometry required to compute x = A^{-1} * (points - origins),
-        # where x are barycentric coordinates of the given points
-        hyperplanes_mat, origins, simplices = self._get_hyperplanes(points)
-
-        # compute weights
-        weights = self._get_weights(points, origins, hyperplanes_mat)
-
-        # dimensions of a sparse matrix
-        #
-        # The matrix will be multiplied by a vector of function parameters, like A * params,
-        # and there are as many parameters as there are points in the function domain.
-        # So the number of matrix columns equals the length of the domain.
-        #
-        # The output from this multiplication is evaluated points, so the number of rows
-        # is equal to the number of points.
-        rows_n = len(simplices)
-        cols_n = len(self._domain)
-
-        # there are n points per simplex, so every index of the given points are
-        # repeated n times, and this array forms the row indices
-        # for a sparse matrix constructed below.
-        simplex_points_n = self.dims_i_n + 1
-        rows_loc = tf.repeat(tf.experimental.numpy.arange(len(points)), repeats=simplex_points_n)
-
-        # every simplex contains the indices of points that it is made of,
-        # and here we flatten the array of such indices.
-        cols_loc = tf.experimental.numpy.ravel(simplices)
-
-        # flatten weights to pass them as a one-dimensional array of matrix entries below
-        entries = tf.experimental.numpy.ravel(weights)
-
-        # construct a sparse matrix from three one-dimensional arrays:
-        # 1. entries of the new matrix
-        # 2. row indices of these matrix entries
-        # 3. column indices of the entries
-        params2points_mat = sparse_mat(
-            (entries, (rows_loc, cols_loc)), shape=(rows_n, cols_n))
-
-        return params2points_mat
-
-    @property    
-    def points(self) -> tf.Tensor: return self._domain.points
-
-    @property
-    def parameters(self) -> tf.Tensor: return self._parameters
-
-    @property
-    def dims_i_n(self) -> int: return self._domain.dims_n
-
-    @property
-    def dims_o_n(self) -> int: return 1
-
 
 # ---------------------------------------------------------------------------*/
 # - neural network
@@ -859,9 +912,10 @@ class neuralnetwork(function):
                 dtype=dtype))
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        domain = self._validate_type(domain)
-
         return self._model(domain)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError
 
     @property
     def parameters(self) -> tf.Tensor:
