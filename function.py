@@ -83,7 +83,7 @@ class constant(function):
 # - multiplied function
 
 class multiplied(function):
-    def __init__(self, func_this: function, func_that: function) -> None:
+    def __init__(self, func_this: function | tf.Tensor, func_that: function | tf.Tensor) -> None:
 
         # check for constants passed as functions and convert
         # them to constant functions
@@ -92,19 +92,19 @@ class multiplied(function):
         if not isinstance(func_that, function):
             func_that = constant(func_that)
 
-        self.func_this = func_this
-        self.func_that = func_that
+        self._func_this = func_this
+        self._func_that = func_that
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        return self.func_this(domain) * self.func_that(domain)
+        return self._func_this(domain) * self._func_that(domain)
 
     def gradient(self, domain: tf.Tensor) -> tf.Tensor:
         # apply the product rule to compute the gradient of a multiplied function
-        return self.func_this.gradient(domain) * self.func_that(domain) + self.func_this(domain) * self.func_that.gradient(domain)
+        return self._func_this.gradient(domain) * self._func_that(domain) + self._func_this(domain) * self._func_that.gradient(domain)
 
     @property
     def parameters(self) -> tf.Tensor:
-        self.func_this.parameters + self.func_that.parameters
+        return self._func_this.parameters + self._func_that.parameters
 
 
 # ---------------------------------------------------------------------------*/
