@@ -198,6 +198,8 @@ class gaussianprocess_sampler:
 
         return [sample(alpha) for alpha in self._alphas]
 
+    @property
+    def samples_n(self) -> int: return len(self._alphas)
 
 # ---------------------------------------------------------------------------*/
 # - gaussian process

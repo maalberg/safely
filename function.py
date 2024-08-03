@@ -5,6 +5,7 @@ from scipy import signal
 from scipy.sparse import coo_matrix as sparse_mat
 
 from itertools import product as cartesian
+from collections import namedtuple
 
 import numpy as np
 import tensorflow as tf
@@ -15,13 +16,19 @@ import utilities as utils
 
 
 # ---------------------------------------------------------------------------*/
+# - function error
+
+error = namedtuple('error', 'mean variance')
+
+
+# ---------------------------------------------------------------------------*/
 # - function
 
 class function(metaclass=interface):
     @abstractmethod
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         """
-        Sample this function on given ``domain``.
+        Evaluate function on the given ``domain``.
         """
         raise NotImplementedError
 
@@ -37,6 +44,20 @@ class function(metaclass=interface):
         Return gradient of this function on the given ``domain``.
         """
         raise NotImplementedError
+
+    def error(self, domain: tf.Tensor) -> error:
+        """
+        Evaluate the error of this function inside the given ``domain`` and return a predicted
+        mean value together with the corresponding variance.
+        """
+
+        # here the function is considered deterministic, so its predicted mean is simply
+        # its evaluation and the variance is zero.
+        #
+        # Classes that model uncertain functions must then overload this method.
+        mean = self.__call__(domain)
+        variance = tf.zeros_like(mean, dtype=gpflow.default_float())
+        return error(mean, variance)
 
     @property
     @abstractmethod
@@ -146,14 +167,6 @@ class quadratic(function):
 
 class dynamics(function):
     @abstractmethod
-    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-        """
-        Evaluate the error of these stochastic dynamics in given ``domain`` and return a predicted
-        mean value together with a corresponding variance.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
         """
         Let these stochastic dynamics observe datapoints in ``domain`` with given ``value``.
@@ -218,8 +231,7 @@ class dynamics_scalar(dynamics):
 
     def initialize_sampler(
             self,
-            discretization: tf.Tensor,
-            samples_n: int = 1, noise_var: float = 0.001**2) -> None:
+            discretization: tf.Tensor, noise_var: float = 0.001**2, samples_n: int = 1) -> None:
         """
         Initialize a new dynamics sampler given sampling ``discretization``, the number of
         samples requested ``samples_n`` and sampling, or observation,
@@ -237,18 +249,23 @@ class dynamics_scalar(dynamics):
         if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
 
         # sample function
-        return self._gp_sampler(domain, with_noise)
+        samples = self._gp_sampler(domain, with_noise)
+
+        # remove the list of samples if there is only one sample taken
+        return samples[0] if self._gp_sampler.samples_n == 1 else samples
 
     def gradient(self, domain: tf.Tensor) -> tf.Tensor:
         raise NotImplementedError
 
-    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    def error(self, domain: tf.Tensor) -> error:
 
         # augment domain with actuation signal if policy is available
         if self.policy is not None: domain = tf.concat([domain, self.policy(domain)], axis=1)
 
         # evaluate function error
-        return self._gp.predict(domain)
+        mean, variance = self._gp.predict(domain)
+
+        return error(mean, variance)
 
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
 
@@ -279,14 +296,16 @@ class dynamics_vector(dynamics):
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
         # evaluate the means of all dynamics inside the list
-        return tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
+        return tf.concat([dyn.error(domain)[0] for dyn in self._dyn], axis=1)
 
     def gradient(self, domain: tf.Tensor) -> tf.Tensor:
         raise NotImplementedError
 
-    def evaluate_error(self, domain: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-        mean = tf.concat([dyn.evaluate_error(domain)[0] for dyn in self._dyn], axis=1)
-        err = tf.concat([dyn.evaluate_error(domain)[1] for dyn in self._dyn], axis=1)
+    def error(self, domain: tf.Tensor) -> error:
+
+        # TODO: optimize these calls, as they call the same thing (mean or variance) twice
+        mean = tf.concat([dyn.error(domain)[0] for dyn in self._dyn], axis=1)
+        err = tf.concat([dyn.error(domain)[1] for dyn in self._dyn], axis=1)
         return mean, err
 
     def observe_datapoints(self, domain: tf.Tensor, value: tf.Tensor) -> None:
@@ -920,3 +939,62 @@ class neuralnetwork(function):
     @property
     def parameters(self) -> tf.Tensor:
         return self._model.trainable_variables
+
+
+# ---------------------------------------------------------------------------*/
+# - lyapunov function
+
+class lyapunov(function):
+    """
+    Since Lyapunov derivative will be different for different dynamics, then
+    particular ``dynamics`` are passed as an argument to this constructor.
+    """
+    def __init__(
+            self,
+            candidate: function, dynamics: dynamics,
+            threshold: float = tf.constant(0, dtype=gpflow.default_float())) -> None:
+        self._candidate = candidate
+        self._dynamics = dynamics
+
+        self.threshold = threshold
+
+    @property
+    def candidate(self) -> function: return self._candidate
+
+    @property
+    def dynamics(self) -> dynamics: return self._dynamics
+
+    def __call__(self, domain: tf.Tensor) -> tf.Tensor:
+        dyn = self.dynamics(domain)
+        lya = self.candidate.gradient(domain)
+        return tf.reduce_sum(lya * dyn, axis=1, keepdims=True)
+
+    def error(self, domain: tf.Tensor) -> error:
+        """
+        Evaluate an error in dynamics on the given ``domain`` and return the mean and variance
+        of this error. The error is evaluated in terms of a Lyapunov derivative along these dynamics.
+        """
+
+        # evaluate an error in dynamics
+        dyn_mean, dyn_var = self.dynamics.error(domain)
+
+        # get derivative of lyapunov candidate
+        lyap = self.candidate.gradient(domain)
+
+        # calculate stability error as a lyapunov derivative along dynamics
+        err_mean = tf.reduce_sum(lyap * dyn_mean, axis=1, keepdims=True)
+        err_var = tf.reduce_sum(lyap**2 * dyn_var, axis=1, keepdims=True)
+
+        return error(err_mean, err_var)
+
+    def gradient(self, domain: tf.Tensor) -> tf.Tensor:
+        dynamics_val = self._dynamics(domain)
+        candidate_grad = self._candidate.gradient(domain)
+
+        # lyapunov derivative is defined by the gradient of a candidate along the
+        # trajectories of dynamics
+        return tf.reduce_sum(candidate_grad * dynamics_val, axis=1, keepdims=True)
+
+    @property
+    def parameters(self) -> tf.Tensor:
+        raise NotImplementedError
