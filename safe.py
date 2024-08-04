@@ -202,7 +202,7 @@ class lyapunov:
         """
 
         # evaluate error of dynamics
-        dyn_mean, dyn_var = self.dynamics.evaluate_error(self.domain.points)
+        dyn_mean, dyn_var = self.dynamics.error(self.domain.points)
 
         # lyapunov derivative can indicate whether dynamics decreases toward an equillibrium point
         lyap = self.candidate.gradient(self.domain.points)
