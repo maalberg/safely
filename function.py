@@ -935,10 +935,23 @@ class neuralnetwork(function):
 
     def gradient(self, domain: tf.Tensor) -> tf.Tensor:
         raise NotImplementedError
+    
+    def lipschitz(self, domain: tf.Tensor) -> tf.Tensor:
+        lipschitz = tf.constant(1, dtype=gpflow.default_float())
+
+        for w, b in self._parameters_iter():
+            lipschitz *= tf.reduce_max(tf.linalg.svd(w, compute_uv=False))
+        return lipschitz
 
     @property
     def parameters(self) -> tf.Tensor:
         return self._model.trainable_variables
+    
+    def _parameters_iter(self):
+        parameters = iter(self.parameters)
+
+        for w, b in zip(parameters, parameters): yield w, b
+        yield self.parameters[-1], None
 
 
 # ---------------------------------------------------------------------------*/
@@ -994,6 +1007,9 @@ class lyapunov(function):
         # lyapunov derivative is defined by the gradient of a candidate along the
         # trajectories of dynamics
         return tf.reduce_sum(candidate_grad * dynamics_val, axis=1, keepdims=True)
+
+    def lipschitz(self, domain: tf.Tensor) -> tf.Tensor:
+        pass
 
     @property
     def parameters(self) -> tf.Tensor:
