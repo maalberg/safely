@@ -311,20 +311,3 @@ class gaussianprocess:
 def tf_ravel_multi_index(multi_index, dims):
     strides = tf.math.cumprod(dims, exclusive=True, reverse=True)
     return tf.reduce_sum(multi_index * tf.expand_dims(strides, 1), axis=0)
-
-
-# ---------------------------------------------------------------------------*/
-# - plot triangulation in 3D
-
-def plot3d_triangulation(triangulation) -> tuple:
-    parameters = triangulation.parameters
-    points = triangulation.points
-    simplices = triangulation.simplices(np.arange(triangulation.nsimplex))
-
-    fig, ax = plt.subplots(subplot_kw={'projection': '3d'})
-
-    ax.plot_trisurf(
-        points[:, 0], points[:, 1], parameters[:, 0],
-        triangles=simplices)
-
-    return fig, ax

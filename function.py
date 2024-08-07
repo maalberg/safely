@@ -125,7 +125,7 @@ class multiplied(function):
 
     @property
     def parameters(self) -> tf.Tensor:
-        return self._func_this.parameters + self._func_that.parameters
+        return self._func_this.parameters * self._func_that.parameters
 
 
 # ---------------------------------------------------------------------------*/
