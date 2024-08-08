@@ -937,6 +937,14 @@ class neuralnetwork(function):
         raise NotImplementedError
     
     def lipschitz(self, domain: tf.Tensor) -> tf.Tensor:
+        """
+        Calculate Lipschitz constant of this neural network.
+
+        The method decomposes network layers into singular values to determine the
+        greatest change caused by the layers. Note that such approach is
+        suitable for layers with contractive properties,
+        e.g. for sigmoids and ReLUs.
+        """
         lipschitz = tf.constant(1, dtype=gpflow.default_float())
 
         for w, b in self._parameters_iter():
@@ -959,8 +967,8 @@ class neuralnetwork(function):
 
 class lyapunov(function):
     """
-    Since Lyapunov derivative will be different for different dynamics, then
-    particular ``dynamics`` are passed as an argument to this constructor.
+    Since Lyapunov derivative will be different for different dynamics,
+    then ``dynamics`` are passed as an argument to this constructor.
     """
     def __init__(
             self,
@@ -978,9 +986,7 @@ class lyapunov(function):
     def dynamics(self) -> dynamics: return self._dynamics
 
     def __call__(self, domain: tf.Tensor) -> tf.Tensor:
-        dyn = self.dynamics(domain)
-        lya = self.candidate.gradient(domain)
-        return tf.reduce_sum(lya * dyn, axis=1, keepdims=True)
+        return self.candidate(domain)
 
     def error(self, domain: tf.Tensor) -> error:
         """
@@ -1001,15 +1007,17 @@ class lyapunov(function):
         return error(err_mean, err_var)
 
     def gradient(self, domain: tf.Tensor) -> tf.Tensor:
-        dynamics_val = self._dynamics(domain)
-        candidate_grad = self._candidate.gradient(domain)
+        """
+        Calculate the gradient of this Lyapunov function. This gradient is defined by the
+        gradient of a candidate function along the trajectories of dynamics.
+        """
+        dyn = self._dynamics(domain)
+        lya = self._candidate.gradient(domain)
 
-        # lyapunov derivative is defined by the gradient of a candidate along the
-        # trajectories of dynamics
-        return tf.reduce_sum(candidate_grad * dynamics_val, axis=1, keepdims=True)
+        return tf.reduce_sum(lya * dyn, axis=1, keepdims=True)
 
     def lipschitz(self, domain: tf.Tensor) -> tf.Tensor:
-        pass
+        return tf.reduce_max(tf.abs(self.candidate.gradient(domain)), axis=1, keepdims=True)
 
     @property
     def parameters(self) -> tf.Tensor:
