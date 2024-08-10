@@ -972,12 +972,9 @@ class lyapunov(function):
     """
     def __init__(
             self,
-            candidate: function, dynamics: dynamics,
-            threshold: float = tf.constant(0, dtype=gpflow.default_float())) -> None:
+            candidate: function, dynamics: dynamics) -> None:
         self._candidate = candidate
         self._dynamics = dynamics
-
-        self.threshold = threshold
 
     @property
     def candidate(self) -> function: return self._candidate

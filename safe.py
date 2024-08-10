@@ -1,5 +1,5 @@
-import numpy as np
 import tensorflow as tf
+import gpflow
 
 from collections import namedtuple
 
@@ -19,10 +19,13 @@ domain_boundary = namedtuple('domain_boundary', 'min max')
 class certificate:
     def __init__(
             self,
-            domain: dom.gridworld, safe: list[bool], rules: fun.lyapunov) -> None:
+            domain: dom.gridworld, safe: list[bool], rules: fun.lyapunov,
+            threshold: float = tf.constant(0, dtype=gpflow.default_float())) -> None:
 
         self._dom = domain
         self._lya = rules
+
+        self.threshold = threshold
 
         self._set_safety(safe)
 
@@ -106,7 +109,7 @@ class certificate:
         # certificate is valid,
         # when the upper bound of a lyapunov error is less than some safety threshold or
         # when there is a user-defined certificate for a specific domain region
-        cert = tf.logical_or(tf.squeeze(err_ci_u < self._lya.threshold, axis=-1), self.safe())
+        cert = tf.logical_or(tf.squeeze(err_ci_u < self.threshold, axis=-1), self.safe())
 
         # determine initial region of attraction, i.e. a region in which a state
         # becomes attracted to an equillibrium point; the region is
